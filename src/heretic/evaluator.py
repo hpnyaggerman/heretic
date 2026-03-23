@@ -20,14 +20,10 @@ class Evaluator:
     base_logprobs: Tensor
     base_refusals: int
 
-    def __init__(self, settings: Settings, model: Model):
+    def __init__(self, settings: Settings, model: Model, judge: Judge | None):
         self.settings = settings
         self.model = model
-
-        if settings.judge_model is not None:
-            self.judge = Judge(settings)
-        else:
-            self.judge = None
+        self.judge = judge
 
         print()
         print(
