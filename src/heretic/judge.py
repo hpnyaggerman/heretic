@@ -146,6 +146,7 @@ class Judge:
             **self.settings.judge_model_options,
             "model_path": model_path,
             "n_ctx": self.settings.judge_context_length,
+            "n_batch": self.settings.judge_batch_size,
             "n_gpu_layers": self.settings.judge_gpu_layers,
             "offload_kqv": self.settings.judge_offload_kv_cache,
             "type_k": kv_type_id,

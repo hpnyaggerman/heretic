@@ -186,6 +186,9 @@ judge_user_template = """<user_prompt>
 # Maximum context length (in tokens) for the judge model.
 judge_context_length = 2048
 
+# Number of tokens to process in parallel during judge prompt evaluation (n_batch).
+judge_batch_size = 512
+
 # Maximum number of tokens the judge model may generate for its verdict.
 judge_max_tokens = 256
 

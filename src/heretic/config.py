@@ -381,6 +381,12 @@ class Settings(BaseSettings):
         description="Maximum context length (in tokens) for the judge model.",
     )
 
+    judge_batch_size: int = Field(
+        default=512,
+        ge=1,
+        description="Number of tokens to process in parallel during judge prompt evaluation (n_batch).",
+    )
+
     judge_max_tokens: int = Field(
         default=256,
         ge=1,
