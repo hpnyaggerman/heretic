@@ -499,17 +499,101 @@ class Model:
                         v = layer_refusal_direction.to(W.device)
                         num_experts = W.shape[0]
 
-                        # lora_A: direction factor, same for all experts.
-                        # Shape (r * num_experts, in_features).
                         weight_A = cast(Tensor, module.lora_A["default"].weight)
-                        lora_A = (-weight * v).unsqueeze(0).repeat(num_experts, 1)
-                        weight_A.data = lora_A.to(weight_A.dtype)
-
-                        # lora_B: weight-dependent factor, differs per expert.
-                        # Shape (out_features, r * num_experts).
-                        per_expert_proj = torch.einsum("d, e d o -> e o", v, W)
                         weight_B = cast(Tensor, module.lora_B["default"].weight)
-                        weight_B.data = per_expert_proj.T.to(weight_B.dtype)
+
+                        if self.settings.row_normalization != RowNormalization.NONE:
+                            # Keep a reference to the original weight matrices
+                            # so we can subtract them later.
+                            W_org = W
+                            # Get the per-expert row norms.
+                            W_row_norms = LA.vector_norm(W, dim=2, keepdim=True)
+                            # Normalize each expert's weight matrix along the rows.
+                            W = F.normalize(W, p=2, dim=2)
+
+                        per_expert_proj = torch.einsum("d, e d o -> e o", v, W)
+
+                        if self.settings.row_normalization == RowNormalization.FULL:
+                            # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
+                            r = self.peft_config.r
+
+                            # Apply rank-1 abliteration to the normalized weights.
+                            W = W + torch.einsum(
+                                "d, eo -> edo", -weight * v, per_expert_proj
+                            )
+                            # Normalize the adjusted weight matrices along the rows.
+                            W = F.normalize(W, p=2, dim=2)
+                            # Restore the original row norms of the weight matrices.
+                            W = W * W_row_norms
+                            # Subtract the original matrices to turn W into a delta.
+                            W = W - W_org
+
+                            # Use a per-expert low-rank SVD to get an approximation
+                            # of each expert's delta matrix.
+                            all_lora_B = torch.empty(
+                                num_experts,
+                                W.shape[1],
+                                r,
+                                device=W.device,
+                                dtype=W.dtype,
+                            )
+                            all_lora_A = torch.empty(
+                                num_experts,
+                                r,
+                                W.shape[2],
+                                device=W.device,
+                                dtype=W.dtype,
+                            )
+                            for expert_index in range(num_experts):
+                                U, S, Vh = torch.svd_lowrank(
+                                    W[expert_index], q=2 * r + 4, niter=6
+                                )
+                                # Truncate it to the part we want to store in the
+                                # LoRA adapter. Note: svd_lowrank actually returns V,
+                                # so transpose it to get Vh.
+                                U = U[:, :r]
+                                S = S[:r]
+                                Vh = Vh[:, :r].T
+                                # Transfer it into the LoRA adapter components. Split
+                                # the singular values evenly between the two components
+                                # to keep their norms balanced and avoid potential
+                                # issues with numerical stability.
+                                sqrt_S = torch.sqrt(S)
+                                all_lora_B[expert_index] = U @ torch.diag(sqrt_S)
+                                all_lora_A[expert_index] = torch.diag(sqrt_S) @ Vh
+
+                            # Pack into the LoRA adapter with A/B swap. weight_A
+                            # stores the per-expert lora_B factors and weight_B stores
+                            # the per-expert lora_A factors, because ParamWrapper's
+                            # einsum layout swaps the roles.
+                            weight_A.data = (
+                                all_lora_B.permute(0, 2, 1)
+                                .reshape(num_experts * r, W.shape[1])
+                                .to(weight_A.dtype)
+                            )
+                            weight_B.data = (
+                                all_lora_A.permute(2, 1, 0)
+                                .reshape(W.shape[2], num_experts * r)
+                                .to(weight_B.dtype)
+                            )
+                        else:
+                            if self.settings.row_normalization == RowNormalization.PRE:
+                                # Make the LoRA adapter apply to the original weight
+                                # matrices by scaling with per-expert row norms.
+                                lora_A = W_row_norms.squeeze(2) * (
+                                    -weight * v
+                                ).unsqueeze(0)
+                            else:
+                                lora_A = (
+                                    (-weight * v).unsqueeze(0).repeat(num_experts, 1)
+                                )
+
+                            # lora_A: direction factor.
+                            # Shape (r * num_experts, in_features).
+                            weight_A.data = lora_A.to(weight_A.dtype)
+                            # lora_B: weight-dependent factor, differs per expert.
+                            # Shape (out_features, r * num_experts).
+                            weight_B.data = per_expert_proj.T.to(weight_B.dtype)
                     continue
 
                 for module in modules:
