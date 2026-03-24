@@ -45,6 +45,7 @@ from rich.traceback import install
 from .analyzer import Analyzer
 from .config import QuantizationMethod, Settings
 from .evaluator import Evaluator
+from .judge import Judge
 from .model import AbliterationParameters, Model, get_model_class
 from .utils import (
     empty_cache,
@@ -339,6 +340,15 @@ def run():
     bad_prompts = load_prompts(settings, settings.bad_prompts)
     print(f"* [bold]{len(bad_prompts)}[/] prompts loaded")
 
+    # Load the judge model before batch size calibration so that its VRAM
+    # usage is accounted for when probing batch sizes.
+    if settings.judge_model is not None:
+        print()
+        print(f"Loading judge model [bold]{settings.judge_model}[/]...")
+        judge: Judge | None = Judge(settings)
+    else:
+        judge = None
+
     if settings.batch_size == 0:
         print()
         print("Determining optimal batch size...")
@@ -432,7 +442,7 @@ def run():
             model.response_prefix += additional_prefix
             print(f"* Extended prefix found: [bold]{model.response_prefix!r}[/]")
 
-    evaluator = Evaluator(settings, model)
+    evaluator = Evaluator(settings, model, judge)
 
     if settings.evaluate_model is not None:
         print()
