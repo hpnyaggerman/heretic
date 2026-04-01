@@ -50,6 +50,25 @@ def get_model_class(
         return AutoModelForCausalLM
 
 
+def _svd_to_lora(
+    delta: Tensor,
+    r: int,
+    row_norms: Tensor | None = None,
+) -> tuple[Tensor, Tensor]:
+    """Decomposes a weight delta matrix into LoRA A/B factors via truncated SVD."""
+    q = min(2 * r + 4, min(delta.shape))
+    U, S, Vh = torch.svd_lowrank(delta, q=q, niter=6)
+    U = U[:, :r]
+    S = S[:r]
+    Vh = Vh[:, :r].T
+    sqrt_S = torch.sqrt(S)
+    lora_B = U @ torch.diag(sqrt_S)
+    if row_norms is not None:
+        lora_B = row_norms * lora_B
+    lora_A = torch.diag(sqrt_S) @ Vh
+    return lora_A, lora_B
+
+
 @dataclass
 class AbliterationParameters:
     max_weights: list[float]
@@ -566,57 +585,24 @@ class Model:
                             # Decompose the combined delta via low-rank SVD.
                             r = self.peft_config.r
 
-                            if self.settings.row_normalization == RowNormalization.FULL:
+                            if self.settings.row_normalization == RowNormalization.PRE:
+                                lora_A, lora_B = _svd_to_lora(
+                                    total_delta_W, r, row_norms=W_row_norms
+                                )
+                            elif (
+                                self.settings.row_normalization == RowNormalization.FULL
+                            ):
                                 # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
                                 W = W + total_delta_W
                                 W = F.normalize(W, p=2, dim=1)
                                 W = W * W_row_norms
-                                W = W - W_org
-                                U, S, Vh = torch.svd_lowrank(W, q=2 * r + 4, niter=6)
-                                U = U[:, :r]
-                                S = S[:r]
-                                Vh = Vh[:, :r].T
-                                sqrt_S = torch.sqrt(S)
-                                weight_B.data = (U @ torch.diag(sqrt_S)).to(
-                                    weight_B.dtype
-                                )
-                                weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
-                                    weight_A.dtype
-                                )
-                            elif (
-                                self.settings.row_normalization == RowNormalization.PRE
-                            ):
-                                U, S, Vh = torch.svd_lowrank(
-                                    total_delta_W,
-                                    q=min(2 * r + 4, min(total_delta_W.shape)),
-                                    niter=6,
-                                )
-                                U = U[:, :r]
-                                S = S[:r]
-                                Vh = Vh[:, :r].T
-                                sqrt_S = torch.sqrt(S)
-                                weight_B.data = (
-                                    W_row_norms * (U @ torch.diag(sqrt_S))
-                                ).to(weight_B.dtype)
-                                weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
-                                    weight_A.dtype
-                                )
+                                effective_delta = W - W_org
+                                lora_A, lora_B = _svd_to_lora(effective_delta, r)
                             else:
-                                U, S, Vh = torch.svd_lowrank(
-                                    total_delta_W,
-                                    q=min(2 * r + 4, min(total_delta_W.shape)),
-                                    niter=6,
-                                )
-                                U = U[:, :r]
-                                S = S[:r]
-                                Vh = Vh[:, :r].T
-                                sqrt_S = torch.sqrt(S)
-                                weight_B.data = (U @ torch.diag(sqrt_S)).to(
-                                    weight_B.dtype
-                                )
-                                weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
-                                    weight_A.dtype
-                                )
+                                lora_A, lora_B = _svd_to_lora(total_delta_W, r)
+
+                            weight_B.data = lora_B.to(weight_B.dtype)
+                            weight_A.data = lora_A.to(weight_A.dtype)
                     else:
                         # Fused expert abliteration: A/B factors are swapped compared
                         # to standard nn.Linear LoRA to match ParamWrapper's einsum
@@ -690,29 +676,20 @@ class Model:
                             )
 
                             for expert_index in range(num_experts):
-                                U, S, Vh = torch.svd_lowrank(
-                                    expert_deltas[expert_index],
-                                    q=min(
-                                        2 * r + 4,
-                                        min(expert_deltas[expert_index].shape),
-                                    ),
-                                    niter=6,
-                                )
-                                U = U[:, :r]
-                                S = S[:r]
-                                Vh = Vh[:, :r].T
-                                sqrt_S = torch.sqrt(S)
-
-                                if (
-                                    self.settings.row_normalization
+                                expert_row_norms = (
+                                    W_row_norms[expert_index]
+                                    if self.settings.row_normalization
                                     == RowNormalization.PRE
-                                ):
-                                    all_lora_B[expert_index] = W_row_norms[
-                                        expert_index
-                                    ] * (U @ torch.diag(sqrt_S))
-                                else:
-                                    all_lora_B[expert_index] = U @ torch.diag(sqrt_S)
-                                all_lora_A[expert_index] = torch.diag(sqrt_S) @ Vh
+                                    else None
+                                )
+                                (
+                                    all_lora_A[expert_index],
+                                    all_lora_B[expert_index],
+                                ) = _svd_to_lora(
+                                    expert_deltas[expert_index],
+                                    r,
+                                    row_norms=expert_row_norms,
+                                )
 
                             # Pack into the LoRA adapter with A/B swap.
                             # weight_A stores the per-expert lora_B factors
@@ -797,42 +774,18 @@ class Model:
                     r = self.peft_config.r
 
                     if self.settings.row_normalization == RowNormalization.PRE:
-                        U, S, Vh = torch.svd_lowrank(
-                            total_delta_W,
-                            q=min(2 * r + 4, min(total_delta_W.shape)),
-                            niter=6,
+                        lora_A, lora_B = _svd_to_lora(
+                            total_delta_W, r, row_norms=W_row_norms
                         )
-                        U = U[:, :r]
-                        S = S[:r]
-                        Vh = Vh[:, :r].T
-                        sqrt_S = torch.sqrt(S)
-                        lora_B = W_row_norms * (U @ torch.diag(sqrt_S))
-                        lora_A = torch.diag(sqrt_S) @ Vh
                     elif self.settings.row_normalization == RowNormalization.FULL:
                         # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
                         W = W + total_delta_W
                         W = F.normalize(W, p=2, dim=1)
                         W = W * W_row_norms
-                        W = W - W_org
-                        U, S, Vh = torch.svd_lowrank(W, q=2 * r + 4, niter=6)
-                        U = U[:, :r]
-                        S = S[:r]
-                        Vh = Vh[:, :r].T
-                        sqrt_S = torch.sqrt(S)
-                        lora_B = U @ torch.diag(sqrt_S)
-                        lora_A = torch.diag(sqrt_S) @ Vh
+                        effective_delta = W - W_org
+                        lora_A, lora_B = _svd_to_lora(effective_delta, r)
                     else:
-                        U, S, Vh = torch.svd_lowrank(
-                            total_delta_W,
-                            q=min(2 * r + 4, min(total_delta_W.shape)),
-                            niter=6,
-                        )
-                        U = U[:, :r]
-                        S = S[:r]
-                        Vh = Vh[:, :r].T
-                        sqrt_S = torch.sqrt(S)
-                        lora_B = U @ torch.diag(sqrt_S)
-                        lora_A = torch.diag(sqrt_S) @ Vh
+                        lora_A, lora_B = _svd_to_lora(total_delta_W, r)
 
                     # Assign to adapters. The adapter name is "default", because that's
                     # what PEFT uses when no name is explicitly specified, as above.
