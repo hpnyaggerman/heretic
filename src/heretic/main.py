@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+# ruff: noqa: E402
+
+from .progress import patch_tqdm
+
+# This patches tqdm class definitions, which must happen
+# before any other module imports tqdm.
+patch_tqdm()
+
 import logging
 import math
 import os
@@ -977,6 +985,7 @@ def run():
                             hflm = HFLM(
                                 pretrained=model.model,  # ty:ignore[invalid-argument-type]
                                 tokenizer=model.tokenizer,  # ty:ignore[invalid-argument-type]
+                                batch_size="auto",
                             )
 
                             table = Table()
@@ -1000,7 +1009,6 @@ def run():
                                         results = lm_eval.simple_evaluate(
                                             model=hflm,
                                             tasks=[benchmark.task],
-                                            batch_size="auto",
                                         )
                                         return results["results"][benchmark.task]
 
