@@ -52,9 +52,9 @@ def get_model_class(
 
 @dataclass
 class AbliterationParameters:
-    max_weight: float
+    max_weights: list[float]
     max_weight_position: float
-    min_weight: float
+    min_weights: list[float]
     min_weight_distance: float
 
 
@@ -211,6 +211,11 @@ class Model:
         else:
             # Row magnitude preservation introduces nonlinear effects.
             lora_rank = self.settings.full_normalization_lora_rank
+
+        # Multi-directional SOM produces k rank-1 deltas whose sum has rank <= k.
+        # LoRA rank must be at least k to avoid lossy truncation.
+        if self.settings.multidirectional_som:
+            lora_rank = max(self.settings.som_k, lora_rank)
 
         self.peft_config = LoraConfig(
             r=lora_rank,
@@ -455,26 +460,46 @@ class Model:
         direction_index: float | None,
         parameters: dict[str, AbliterationParameters],
     ):
-        if direction_index is None:
-            refusal_direction = None
-        else:
+        _, num_directions, _ = refusal_directions.shape
+
+        if direction_index is not None:
             # The index must be shifted by 1 because the first element
             # of refusal_directions is the direction for the embeddings.
             weight, index = math.modf(direction_index + 1)
-            refusal_direction = F.normalize(
-                refusal_directions[int(index)].lerp(
-                    refusal_directions[int(index) + 1],
-                    weight,
-                ),
-                p=2,
+            idx1 = int(index)
+            idx2 = min(idx1 + 1, refusal_directions.shape[0] - 1)
+            interpolated_directions = torch.stack(
+                [
+                    F.normalize(
+                        r_dir[idx1].lerp(
+                            r_dir[idx2],
+                            weight,
+                        ),
+                        p=2,
+                        dim=0,
+                    )
+                    for r_dir in refusal_directions.permute(1, 0, 2)
+                ],
                 dim=0,
             )
+            layer_refusal_directions = interpolated_directions
+        else:
+            layer_refusal_directions = refusal_directions
 
         # Note that some implementations of abliteration also orthogonalize
         # the embedding matrix, but it's unclear if that has any benefits.
         for layer_index in range(len(self.get_layers())):
             for component, modules in self.get_layer_modules(layer_index).items():
                 params = parameters[component]
+
+                if (
+                    len(params.max_weights) != num_directions
+                    or len(params.min_weights) != num_directions
+                ):
+                    raise ValueError(
+                        f"Mismatch in number of directions and weights for component '{component}'. "
+                        f"Found {num_directions} directions but {len(params.max_weights)} max_weights."
+                    )
 
                 # Type inference fails here for some reason.
                 distance = cast(float, abs(layer_index - params.max_weight_position))
@@ -484,18 +509,18 @@ class Model:
                 if distance > params.min_weight_distance:
                     continue
 
-                # Interpolate linearly between max_weight and min_weight
-                # over min_weight_distance.
-                weight = params.max_weight + (distance / params.min_weight_distance) * (
-                    params.min_weight - params.max_weight
-                )
+                # Calculate the base weight scaling factor for this layer.
+                layer_base_weight = params.max_weights[0] + (
+                    distance / params.min_weight_distance
+                ) * (params.min_weights[0] - params.max_weights[0])
 
-                if refusal_direction is None:
+                # Get the refusal directions for the current layer.
+                if direction_index is None:
                     # The index must be shifted by 1 because the first element
                     # of refusal_directions is the direction for the embeddings.
-                    layer_refusal_direction = refusal_directions[layer_index + 1]
+                    current_layer_directions = layer_refusal_directions[layer_index + 1]
                 else:
-                    layer_refusal_direction = refusal_direction
+                    current_layer_directions = layer_refusal_directions
 
                 if component in PARAM_WRAPPER_COMPONENTS:
                     if component == "mlp.router":
@@ -503,13 +528,10 @@ class Model:
                         # direction v lives in the router's input space (hidden
                         # states), not its output space (expert logits), so we
                         # project out v from the input side:
-                        # delta_W = -lambda * (W * v) * v^T
-                        # lora_A = -lambda * v^T  (direction, in input space)
-                        # lora_B = W * v           (weight-dependent alignment)
+                        # delta_W = -lambda * outer(W @ v, v)
                         for module in modules:
                             module = cast(ParamWrapper, module)
                             W = module.get_param().to(torch.float32)
-                            v = layer_refusal_direction.to(W.device)
 
                             weight_A = cast(Tensor, module.lora_A["default"].weight)
                             weight_B = cast(Tensor, module.lora_B["default"].weight)
@@ -523,36 +545,37 @@ class Model:
                                 # Normalize the weight matrix along the rows.
                                 W = F.normalize(W, p=2, dim=1)
 
-                            # Per-row alignment with the refusal direction.
-                            alignment = W @ v
+                            # Accumulate per-direction rank-1 input-side deltas.
+                            total_delta_W = torch.zeros_like(W, device=W.device)
+
+                            for i in range(num_directions):
+                                v = current_layer_directions[i].to(W.device)
+
+                                direction_specific_weight = layer_base_weight * (
+                                    params.max_weights[i] / params.max_weights[0]
+                                    if params.max_weights[0] != 0
+                                    else 1.0
+                                )
+
+                                # Per-row alignment with the refusal direction.
+                                alignment = W @ v
+                                total_delta_W += torch.outer(
+                                    -direction_specific_weight * alignment, v
+                                )
+
+                            # Decompose the combined delta via low-rank SVD.
+                            r = self.peft_config.r
 
                             if self.settings.row_normalization == RowNormalization.FULL:
                                 # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
-                                r = self.peft_config.r
-
-                                # Apply rank-1 input-side abliteration to the
-                                # normalized weights.
-                                W = W + torch.outer(-weight * alignment, v)
-                                # Normalize the adjusted weight matrix along the rows.
+                                W = W + total_delta_W
                                 W = F.normalize(W, p=2, dim=1)
-                                # Restore the original row norms of the weight matrix.
                                 W = W * W_row_norms
-                                # Subtract the original matrix to turn W into a delta.
                                 W = W - W_org
-
-                                # Use a low-rank SVD to get an approximation of the
-                                # delta matrix.
                                 U, S, Vh = torch.svd_lowrank(W, q=2 * r + 4, niter=6)
-                                # Truncate it to the part we want to store in the
-                                # LoRA adapter. Note: svd_lowrank actually returns V,
-                                # so transpose it to get Vh.
                                 U = U[:, :r]
                                 S = S[:r]
                                 Vh = Vh[:, :r].T
-                                # Transfer it into the LoRA adapter components. Split
-                                # the singular values evenly between the two components
-                                # to keep their norms balanced and avoid potential
-                                # issues with numerical stability.
                                 sqrt_S = torch.sqrt(S)
                                 weight_B.data = (U @ torch.diag(sqrt_S)).to(
                                     weight_B.dtype
@@ -560,32 +583,48 @@ class Model:
                                 weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
                                     weight_A.dtype
                                 )
-                            else:
-                                weight_A.data = (
-                                    (-weight * v).view(1, -1).to(weight_A.dtype)
+                            elif (
+                                self.settings.row_normalization == RowNormalization.PRE
+                            ):
+                                U, S, Vh = torch.svd_lowrank(
+                                    total_delta_W,
+                                    q=min(2 * r + 4, min(total_delta_W.shape)),
+                                    niter=6,
                                 )
-
-                                if (
-                                    self.settings.row_normalization
-                                    == RowNormalization.PRE
-                                ):
-                                    # Make the LoRA adapter apply to the original
-                                    # weight matrix by scaling with row norms.
-                                    weight_B.data = (
-                                        W_row_norms * alignment.view(-1, 1)
-                                    ).to(weight_B.dtype)
-                                else:
-                                    weight_B.data = alignment.view(-1, 1).to(
-                                        weight_B.dtype
-                                    )
+                                U = U[:, :r]
+                                S = S[:r]
+                                Vh = Vh[:, :r].T
+                                sqrt_S = torch.sqrt(S)
+                                weight_B.data = (
+                                    W_row_norms * (U @ torch.diag(sqrt_S))
+                                ).to(weight_B.dtype)
+                                weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
+                                    weight_A.dtype
+                                )
+                            else:
+                                U, S, Vh = torch.svd_lowrank(
+                                    total_delta_W,
+                                    q=min(2 * r + 4, min(total_delta_W.shape)),
+                                    niter=6,
+                                )
+                                U = U[:, :r]
+                                S = S[:r]
+                                Vh = Vh[:, :r].T
+                                sqrt_S = torch.sqrt(S)
+                                weight_B.data = (U @ torch.diag(sqrt_S)).to(
+                                    weight_B.dtype
+                                )
+                                weight_A.data = (torch.diag(sqrt_S) @ Vh).to(
+                                    weight_A.dtype
+                                )
                     else:
                         # Fused expert abliteration: A/B factors are swapped compared
                         # to standard nn.Linear LoRA to match ParamWrapper's einsum
                         # layout "o r e, e r i -> e i o".
+                        # delta_W[e] = -lambda * outer(v, v @ W[e]) for each expert.
                         for module in modules:
                             module = cast(ParamWrapper, module)
                             W = module.get_param().to(torch.float32)
-                            v = layer_refusal_direction.to(W.device)
                             num_experts = W.shape[0]
 
                             weight_A = cast(Tensor, module.lora_A["default"].weight)
@@ -601,107 +640,95 @@ class Model:
                                 # the rows.
                                 W = F.normalize(W, p=2, dim=2)
 
-                            per_expert_proj = torch.einsum("d, e d o -> e o", v, W)
+                            # Accumulate per-direction rank-1 deltas for all
+                            # experts simultaneously.
+                            all_delta_W = torch.zeros_like(W, device=W.device)
+
+                            for i in range(num_directions):
+                                v = current_layer_directions[i].to(W.device)
+
+                                direction_specific_weight = layer_base_weight * (
+                                    params.max_weights[i] / params.max_weights[0]
+                                    if params.max_weights[0] != 0
+                                    else 1.0
+                                )
+
+                                per_expert_proj = torch.einsum("d, e d o -> e o", v, W)
+                                all_delta_W += torch.einsum(
+                                    "d, eo -> edo",
+                                    -direction_specific_weight * v,
+                                    per_expert_proj,
+                                )
+
+                            # Per-expert low-rank SVD decomposition.
+                            r = self.peft_config.r
 
                             if self.settings.row_normalization == RowNormalization.FULL:
                                 # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
-                                r = self.peft_config.r
-
-                                # Apply rank-1 abliteration to the normalized
-                                # weights.
-                                W = W + torch.einsum(
-                                    "d, eo -> edo",
-                                    -weight * v,
-                                    per_expert_proj,
-                                )
-                                # Normalize the adjusted weight matrices along
-                                # the rows.
+                                W = W + all_delta_W
                                 W = F.normalize(W, p=2, dim=2)
-                                # Restore the original row norms of the weight
-                                # matrices.
                                 W = W * W_row_norms
-                                # Subtract the original matrices to turn W into
-                                # a delta.
                                 W = W - W_org
-
-                                # Use a per-expert low-rank SVD to get an
-                                # approximation of each expert's delta matrix.
-                                all_lora_B = torch.empty(
-                                    num_experts,
-                                    W.shape[1],
-                                    r,
-                                    device=W.device,
-                                    dtype=W.dtype,
-                                )
-                                all_lora_A = torch.empty(
-                                    num_experts,
-                                    r,
-                                    W.shape[2],
-                                    device=W.device,
-                                    dtype=W.dtype,
-                                )
-                                for expert_index in range(num_experts):
-                                    U, S, Vh = torch.svd_lowrank(
-                                        W[expert_index],
-                                        q=2 * r + 4,
-                                        niter=6,
-                                    )
-                                    # Truncate it to the part we want to store
-                                    # in the LoRA adapter. Note: svd_lowrank
-                                    # actually returns V, so transpose it to
-                                    # get Vh.
-                                    U = U[:, :r]
-                                    S = S[:r]
-                                    Vh = Vh[:, :r].T
-                                    # Transfer it into the LoRA adapter
-                                    # components. Split the singular values
-                                    # evenly between the two components to keep
-                                    # their norms balanced and avoid potential
-                                    # issues with numerical stability.
-                                    sqrt_S = torch.sqrt(S)
-                                    all_lora_B[expert_index] = U @ torch.diag(sqrt_S)
-                                    all_lora_A[expert_index] = torch.diag(sqrt_S) @ Vh
-
-                                # Pack into the LoRA adapter with A/B swap.
-                                # weight_A stores the per-expert lora_B factors
-                                # and weight_B stores the per-expert lora_A
-                                # factors, because ParamWrapper's einsum layout
-                                # swaps the roles.
-                                weight_A.data = (
-                                    all_lora_B.permute(0, 2, 1)
-                                    .reshape(num_experts * r, W.shape[1])
-                                    .to(weight_A.dtype)
-                                )
-                                weight_B.data = (
-                                    all_lora_A.permute(2, 1, 0)
-                                    .reshape(W.shape[2], num_experts * r)
-                                    .to(weight_B.dtype)
-                                )
+                                # W is now the effective delta per expert.
+                                expert_deltas = W
                             else:
+                                expert_deltas = all_delta_W
+
+                            all_lora_B = torch.empty(
+                                num_experts,
+                                expert_deltas.shape[1],
+                                r,
+                                device=expert_deltas.device,
+                                dtype=expert_deltas.dtype,
+                            )
+                            all_lora_A = torch.empty(
+                                num_experts,
+                                r,
+                                expert_deltas.shape[2],
+                                device=expert_deltas.device,
+                                dtype=expert_deltas.dtype,
+                            )
+
+                            for expert_index in range(num_experts):
+                                U, S, Vh = torch.svd_lowrank(
+                                    expert_deltas[expert_index],
+                                    q=min(
+                                        2 * r + 4,
+                                        min(expert_deltas[expert_index].shape),
+                                    ),
+                                    niter=6,
+                                )
+                                U = U[:, :r]
+                                S = S[:r]
+                                Vh = Vh[:, :r].T
+                                sqrt_S = torch.sqrt(S)
+
                                 if (
                                     self.settings.row_normalization
                                     == RowNormalization.PRE
                                 ):
-                                    # Make the LoRA adapter apply to the
-                                    # original weight matrices by scaling with
-                                    # per-expert row norms.
-                                    lora_A = W_row_norms.squeeze(2) * (
-                                        -weight * v
-                                    ).unsqueeze(0)
+                                    all_lora_B[expert_index] = W_row_norms[
+                                        expert_index
+                                    ] * (U @ torch.diag(sqrt_S))
                                 else:
-                                    lora_A = (
-                                        (-weight * v)
-                                        .unsqueeze(0)
-                                        .repeat(num_experts, 1)
-                                    )
+                                    all_lora_B[expert_index] = U @ torch.diag(sqrt_S)
+                                all_lora_A[expert_index] = torch.diag(sqrt_S) @ Vh
 
-                                # lora_A: direction factor.
-                                # Shape (r * num_experts, in_features).
-                                weight_A.data = lora_A.to(weight_A.dtype)
-                                # lora_B: weight-dependent factor, differs per
-                                # expert.
-                                # Shape (out_features, r * num_experts).
-                                weight_B.data = per_expert_proj.T.to(weight_B.dtype)
+                            # Pack into the LoRA adapter with A/B swap.
+                            # weight_A stores the per-expert lora_B factors
+                            # and weight_B stores the per-expert lora_A
+                            # factors, because ParamWrapper's einsum layout
+                            # swaps the roles.
+                            weight_A.data = (
+                                all_lora_B.permute(0, 2, 1)
+                                .reshape(num_experts * r, expert_deltas.shape[1])
+                                .to(weight_A.dtype)
+                            )
+                            weight_B.data = (
+                                all_lora_A.permute(2, 1, 0)
+                                .reshape(expert_deltas.shape[2], num_experts * r)
+                                .to(weight_B.dtype)
+                            )
                     continue
 
                 for module in modules:
@@ -713,14 +740,6 @@ class Model:
                     #        different model configurations, and PEFT employs different
                     #        module types depending on the chosen quantization.
                     module = cast(Linear, module)
-
-                    # LoRA abliteration: delta W = -lambda * v * (v^T W)
-                    # lora_B = -lambda * v
-                    # lora_A = v^T W
-
-                    # Use the FP32 refusal direction directly (no downcast/upcast)
-                    # and move to the correct device.
-                    v = layer_refusal_direction.to(module.weight.device)
 
                     # Get W (dequantize if necessary).
                     #
@@ -755,38 +774,62 @@ class Model:
                         # Normalize the weight matrix along the rows.
                         W = F.normalize(W, p=2, dim=1)
 
-                    # Calculate lora_A = v^T W
-                    # v is (d_out,), W is (d_out, d_in)
-                    # v @ W -> (d_in,)
-                    lora_A = (v @ W).view(1, -1)
+                    # Accumulate delta across all refusal directions.
+                    total_delta_W = torch.zeros_like(W, device=W.device)
 
-                    # Calculate lora_B = -weight * v
-                    # v is (d_out,)
-                    lora_B = (-weight * v).view(-1, 1)
+                    for i in range(num_directions):
+                        v = current_layer_directions[i].to(module.weight.device)
+
+                        direction_specific_weight = layer_base_weight * (
+                            params.max_weights[i] / params.max_weights[0]
+                            if params.max_weights[0] != 0
+                            else 1.0
+                        )
+
+                        # LoRA abliteration: delta W = -lambda * v * (v^T W)
+                        lora_A = (v @ W).view(1, -1)
+                        lora_B = (-direction_specific_weight * v).view(-1, 1)
+                        total_delta_W += lora_B @ lora_A
+
+                    # Decompose the combined delta via low-rank SVD for all
+                    # normalization modes. When num_directions=1, total_delta_W
+                    # is rank 1, and the SVD is exact.
+                    r = self.peft_config.r
 
                     if self.settings.row_normalization == RowNormalization.PRE:
-                        # Make the LoRA adapter apply to the original weight matrix.
-                        lora_B = W_row_norms * lora_B
-                    elif self.settings.row_normalization == RowNormalization.FULL:
-                        # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
-                        W = W + lora_B @ lora_A
-                        # Normalize the adjusted weight matrix along the rows.
-                        W = F.normalize(W, p=2, dim=1)
-                        # Restore the original row norms of the weight matrix.
-                        W = W * W_row_norms
-                        # Subtract the original matrix to turn W into a delta.
-                        W = W - W_org
-                        # Use a low-rank SVD to get an approximation of the matrix.
-                        r = self.peft_config.r
-                        U, S, Vh = torch.svd_lowrank(W, q=2 * r + 4, niter=6)
-                        # Truncate it to the part we want to store in the LoRA adapter.
-                        # Note: svd_lowrank actually returns V, so transpose it to get Vh.
+                        U, S, Vh = torch.svd_lowrank(
+                            total_delta_W,
+                            q=min(2 * r + 4, min(total_delta_W.shape)),
+                            niter=6,
+                        )
                         U = U[:, :r]
                         S = S[:r]
                         Vh = Vh[:, :r].T
-                        # Transfer it into the LoRA adapter components. Split the singular values
-                        # evenly between the two components to keep their norms balanced and avoid
-                        # potential issues with numerical stability.
+                        sqrt_S = torch.sqrt(S)
+                        lora_B = W_row_norms * (U @ torch.diag(sqrt_S))
+                        lora_A = torch.diag(sqrt_S) @ Vh
+                    elif self.settings.row_normalization == RowNormalization.FULL:
+                        # Approximates https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
+                        W = W + total_delta_W
+                        W = F.normalize(W, p=2, dim=1)
+                        W = W * W_row_norms
+                        W = W - W_org
+                        U, S, Vh = torch.svd_lowrank(W, q=2 * r + 4, niter=6)
+                        U = U[:, :r]
+                        S = S[:r]
+                        Vh = Vh[:, :r].T
+                        sqrt_S = torch.sqrt(S)
+                        lora_B = U @ torch.diag(sqrt_S)
+                        lora_A = torch.diag(sqrt_S) @ Vh
+                    else:
+                        U, S, Vh = torch.svd_lowrank(
+                            total_delta_W,
+                            q=min(2 * r + 4, min(total_delta_W.shape)),
+                            niter=6,
+                        )
+                        U = U[:, :r]
+                        S = S[:r]
+                        Vh = Vh[:, :r].T
                         sqrt_S = torch.sqrt(S)
                         lora_B = U @ torch.diag(sqrt_S)
                         lora_A = torch.diag(sqrt_S) @ Vh
