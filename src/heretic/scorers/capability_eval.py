@@ -6,7 +6,7 @@ import re
 from collections.abc import Callable
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from heretic.plugin import Context
 from heretic.scorer import Score, Scorer
@@ -1895,6 +1895,29 @@ class Settings(BaseModel):
         description="Whether to print prompt/response pairs when scoring challenges.",
     )
 
+    thinking_tokens: list[list[str]] = Field(
+        default=[
+            ["<think>", "</think>"],
+            ["<thought>", "</thought>"],
+            ["[THINK]", "[/THINK]"],
+        ],
+        description=(
+            "Opening/closing token pairs delimiting thinking sections in model output. "
+            "Each entry must be a list of exactly two strings: the opening and closing token."
+        ),
+    )
+
+    @field_validator("thinking_tokens")
+    @classmethod
+    def validate_thinking_tokens(cls, value: list[list[str]]) -> list[list[str]]:
+        for i, pair in enumerate(value):
+            if len(pair) != 2:
+                raise ValueError(
+                    f"thinking_tokens entry {i} must have exactly 2 elements "
+                    f"(opening and closing token), got {len(pair)}."
+                )
+        return value
+
 
 class CapabilityEval(Scorer):
     """
@@ -1910,7 +1933,42 @@ class CapabilityEval(Scorer):
     def score_name(self) -> str:
         return "Capability"
 
+    def _strip_thinking_tokens(self, text: str) -> str:
+        """Remove thinking sections delimited by configurable token pairs."""
+        for paired_pattern, prefix_pattern, opening, closing in self._thinking_patterns:
+            if closing.lower() not in text.lower():
+                continue
+            if opening.lower() in text.lower():
+                text = paired_pattern.sub("", text)
+            else:
+                text = prefix_pattern.sub("", text)
+        return text.strip()
+
     def init(self, ctx: Context) -> None:
+        # Compile thinking token regex patterns.
+        self._thinking_patterns: list[
+            tuple[re.Pattern[str], re.Pattern[str], str, str]
+        ] = []
+        for opening, closing in self.settings.thinking_tokens:
+            self._thinking_patterns.append(
+                (
+                    # Match a complete opening...closing pair.
+                    re.compile(
+                        re.escape(opening) + ".*?" + re.escape(closing),
+                        re.DOTALL | re.IGNORECASE,
+                    ),
+                    # Match everything from the start up to the closing token.
+                    # Used when the opening token is absent because the chat
+                    # template injected it as part of the generation prompt.
+                    re.compile(
+                        r"\A.*?" + re.escape(closing),
+                        re.DOTALL | re.IGNORECASE,
+                    ),
+                    opening,
+                    closing,
+                )
+            )
+
         print()
         print("Loading capability evaluation challenges...")
 
@@ -1942,9 +2000,10 @@ class CapabilityEval(Scorer):
 
         # Collect per-task scores grouped by challenge type.
         challenge_scores: dict[str, list[float]] = {}
-        for prompt, response, answer, metadata in zip(
+        for prompt, raw_response, answer, metadata in zip(
             self._prompts, responses, self._answers, self._metadata
         ):
+            response = self._strip_thinking_tokens(raw_response)
             scorer_function = _CHALLENGE_SCORERS[metadata["source_dataset"]]
             task_score = scorer_function(response, answer, metadata)
             dataset = metadata["source_dataset"]

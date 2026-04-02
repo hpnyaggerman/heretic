@@ -224,6 +224,9 @@ column = "text"
 # system_prompt = "In your output, return only the answer in the format requested below and nothing else."
 # List of challenge names to evaluate. Available: ab, advanced_geometry, knights_knaves, futoshiki, jugs, sentence_reordering.
 # challenges = ["ab", "advanced_geometry", "knights_knaves", "futoshiki", "jugs", "sentence_reordering"]
+# Opening/closing token pairs delimiting thinking sections in model output.
+# Each entry must be a list of exactly two strings: the opening and closing token.
+# thinking_tokens = [["<think>", "</think>"], ["<thought>", "</thought>"], ["[THINK]", "[/THINK]"]]
 
 # Judge-based refusal classification scorer.
 # Uses an LLM judge via an OpenAI-compatible API to classify responses,
@@ -332,3 +335,26 @@ column = "text"
 # dataset = "mlabonne/harmful_behaviors"
 # split = "test[:100]"
 # column = "text"
+
+# Smol Worldcup scorer.
+# Evaluates hallucination detection and refusal calibration using tasks from
+# the ginigen-ai/smol-worldcup benchmark (season 1). The score is the harmonic
+# mean of per-category accuracies (hallucination_trap and refusal_balance).
+#
+# To enable, add it to the scorers list above:
+# scorers = [
+#     { plugin = "heretic.scorers.refusal_rate.RefusalRate", direction = "minimize"},
+#     { plugin = "heretic.scorers.kl_divergence.KLDivergence", direction = "minimize"},
+#     { plugin = "heretic.scorers.smol_worldcup.SmolWorldcup", direction = "maximize"},
+# ]
+
+# [scorer.SmolWorldcup]
+# System prompt prepended to all evaluation questions.
+# system_prompt = ""
+
+# Opening/closing token pairs delimiting thinking sections in model output.
+# Each entry must be a list of exactly two strings: the opening and closing token.
+# thinking_tokens = [["<think>", "</think>"], ["<thought>", "</thought>"], ["[THINK]", "[/THINK]"]]
+
+# Whether to print prompt/response pairs when scoring.
+# print_responses = false
