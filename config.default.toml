@@ -58,6 +58,9 @@ residual_plot_style = "dark_background"
 scorers = [
     { plugin = "heretic.scorers.refusal_rate.RefusalRate", direction = "minimize"},
     { plugin = "heretic.scorers.kl_divergence.KLDivergence", direction = "minimize"},
+    # To use the capability evaluation scorer (replaces KL divergence with reasoning challenges),
+    # comment out KLDivergence above and uncomment the line below.
+    # { plugin = "heretic.scorers.capability_eval.CapabilityEval", direction = "maximize"},
     # To use the judge scorer, comment out RefusalRate above and uncomment the line below.
     # { plugin = "heretic.scorers.judge_refusal_rate.JudgeRefusalRate", direction = "minimize"},
 ]
@@ -203,6 +206,24 @@ column = "text"
 dataset = "mlabonne/harmless_alpaca"
 split = "test[:100]"
 column = "text"
+
+# Capability evaluation scorer.
+# Evaluates model capabilities using structured reasoning challenges with known correct answers.
+# Can replace KL divergence for measuring capability preservation during optimization.
+#
+# To enable, replace the KLDivergence scorer in the scorers list above:
+# scorers = [
+#     { plugin = "heretic.scorers.refusal_rate.RefusalRate", direction = "minimize"},
+#     { plugin = "heretic.scorers.capability_eval.CapabilityEval", direction = "maximize"},
+# ]
+
+# [scorer.CapabilityEval]
+# Whether to print prompt/response pairs when scoring challenges.
+# print_responses = false
+# System prompt prepended to all challenge questions.
+# system_prompt = "In your output, return only the answer in the format requested below and nothing else."
+# List of challenge names to evaluate. Available: ab, advanced_geometry, knights_knaves, futoshiki, jugs, sentence_reordering.
+# challenges = ["ab", "advanced_geometry", "knights_knaves", "futoshiki", "jugs", "sentence_reordering"]
 
 # Judge-based refusal classification scorer.
 # Uses an LLM judge via an OpenAI-compatible API to classify responses,
