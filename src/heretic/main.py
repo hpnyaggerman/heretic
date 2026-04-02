@@ -46,6 +46,7 @@ from optuna.storages.journal import JournalFileBackend, JournalFileOpenLock
 from optuna.trial import FrozenTrial, TrialState
 from pydantic import ValidationError
 from questionary import Choice, Style
+from rich.progress import track
 from rich.table import Table
 from rich.traceback import install
 
@@ -481,8 +482,11 @@ def run():
 
         print("  - Retrieving multi-directions through self-organizing map...")
 
-        for layer_idx in range(num_layers):
-            print(f"  - Processing Layer {layer_idx + 1}/{num_layers}...")
+        for layer_idx in track(
+            range(num_layers),
+            description="  - Processing SOM layers...",
+            transient=True,
+        ):
             # Extract residuals for the current layer
             # Shape: (num_bad_prompts, hidden_dim)
             layer_residuals = bad_residuals[:, layer_idx, :].cpu().float().numpy()
@@ -656,9 +660,14 @@ def run():
         print("* Abliterating...")
         model.abliterate(refusal_directions, direction_index, parameters)
         print("* Evaluating...")
+        evaluation_start = time.perf_counter()
         scores = evaluator.get_scores()
+        evaluation_elapsed = time.perf_counter() - evaluation_start
         objective_values = evaluator.get_objective_values(scores)
 
+        print(
+            f"  * Evaluation completed in [bold]{format_duration(evaluation_elapsed)}[/]"
+        )
         print("  * Metrics:")
         for name, score in scores:
             print(f"    * {name}: [bold]{score.cli_display}[/]")

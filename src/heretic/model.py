@@ -2,6 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 import math
+import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Type, cast
@@ -12,6 +13,7 @@ import torch.linalg as LA
 import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
 from peft.tuners.lora.layer import Linear, ParamWrapper
+from rich.progress import Progress, TaskID
 from torch import FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList, Parameter
 from transformers import (
@@ -28,6 +30,7 @@ from transformers import (
 from transformers.generation import (
     GenerateDecoderOnlyOutput,  # ty:ignore[possibly-missing-import]
 )
+from transformers.generation.streamers import BaseStreamer
 
 from .config import QuantizationMethod, RowNormalization, Settings
 from .utils import Prompt, batchify, empty_cache, print
@@ -67,6 +70,22 @@ def _svd_to_lora(
         lora_B = row_norms * lora_B
     lora_A = torch.diag(sqrt_S) @ Vh
     return lora_A, lora_B
+
+
+class GenerationProgressStreamer(BaseStreamer):
+    """Updates a Rich progress bar once per generation step."""
+
+    def __init__(self, progress: Progress, task_id: TaskID) -> None:
+        self._progress = progress
+        self._task_id = task_id
+
+    def put(self, value: Any) -> None:
+        # Each call means one decode step completed across the batch.
+        self._progress.update(self._task_id, advance=1)
+
+    def end(self) -> None:
+        # Generation finished. The caller handles progress bar cleanup.
+        pass
 
 
 @dataclass
@@ -846,11 +865,15 @@ class Model:
         self,
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
+        streamer: BaseStreamer | None = None,
     ) -> list[str]:
-        inputs, outputs = self.generate(
-            prompts,
-            max_new_tokens=self.settings.max_response_length,
-        )
+        generate_kwargs: dict[str, Any] = {
+            "max_new_tokens": self.settings.max_response_length,
+        }
+        if streamer is not None:
+            generate_kwargs["streamer"] = streamer
+
+        inputs, outputs = self.generate(prompts, **generate_kwargs)
 
         return self.tokenizer.batch_decode(
             # Extract the newly generated part.
@@ -865,13 +888,50 @@ class Model:
         prompts: list[Prompt],
         skip_special_tokens: bool = False,
     ) -> list[str]:
-        responses = []
-        for batch in batchify(prompts, self.settings.batch_size):
-            for response in self.get_responses(
-                batch,
-                skip_special_tokens=skip_special_tokens,
-            ):
-                responses.append(response)
+        responses: list[str] = []
+        batches = batchify(prompts, self.settings.batch_size)
+
+        with Progress(transient=True) as progress:
+            batch_task = progress.add_task(
+                "Generating responses...",
+                total=len(batches),
+            )
+            token_task = progress.add_task(
+                "  Tokens...",
+                total=self.settings.max_response_length,
+            )
+
+            for batch_index, batch in enumerate(batches):
+                # Reset token progress for the new batch.
+                progress.reset(token_task, total=self.settings.max_response_length)
+                progress.update(
+                    batch_task,
+                    description=f"Generating responses (batch {batch_index + 1}/{len(batches)})...",
+                )
+
+                streamer = GenerationProgressStreamer(progress, token_task)
+                batch_start = time.perf_counter()
+                batch_responses = self.get_responses(
+                    batch,
+                    skip_special_tokens=skip_special_tokens,
+                    streamer=streamer,
+                )
+                batch_elapsed = time.perf_counter() - batch_start
+
+                # Count generated tokens for throughput measurement.
+                batch_tokens = sum(
+                    len(self.tokenizer.encode(response)) for response in batch_responses
+                )
+                tokens_per_second = (
+                    batch_tokens / batch_elapsed if batch_elapsed > 0 else 0.0
+                )
+
+                responses.extend(batch_responses)
+                progress.update(
+                    batch_task,
+                    advance=1,
+                    description=f"Generating responses ({tokens_per_second:.0f} tok/s)...",
+                )
 
         return responses
 
@@ -921,10 +981,17 @@ class Model:
         return residuals
 
     def get_residuals_batched(self, prompts: list[Prompt]) -> Tensor:
-        residuals = []
+        batches = batchify(prompts, self.settings.batch_size)
+        residuals: list[Tensor] = []
 
-        for batch in batchify(prompts, self.settings.batch_size):
-            residuals.append(self.get_residuals(batch))
+        with Progress(transient=True) as progress:
+            task = progress.add_task(
+                "Collecting residuals...",
+                total=len(batches),
+            )
+            for batch in batches:
+                residuals.append(self.get_residuals(batch))
+                progress.update(task, advance=1)
 
         return torch.cat(residuals, dim=0)
 
@@ -950,10 +1017,17 @@ class Model:
         return logits
 
     def get_logits_batched(self, prompts: list[Prompt]) -> Tensor:
-        logits = []
+        batches = batchify(prompts, self.settings.batch_size)
+        logits: list[Tensor] = []
 
-        for batch in batchify(prompts, self.settings.batch_size):
-            logits.append(self.get_logits(batch))
+        with Progress(transient=True) as progress:
+            task = progress.add_task(
+                "Collecting logits...",
+                total=len(batches),
+            )
+            for batch in batches:
+                logits.append(self.get_logits(batch))
+                progress.update(task, advance=1)
 
         return torch.cat(logits, dim=0)
 

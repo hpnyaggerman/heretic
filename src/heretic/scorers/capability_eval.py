@@ -2013,10 +2013,11 @@ class CapabilityEval(Scorer):
                 print()
                 print(f"[bold]System prompt:[/] {prompt.system}")
                 print(f"[bold]Prompt:[/] {prompt.user}")
-                if not response.strip():
-                    response = "[italic]\\[empty][/]"
+                display_response = (
+                    raw_response if raw_response.strip() else "[italic]\\[empty][/]"
+                )
                 color = "green" if task_score >= 1.0 else "red"
-                print(f"[bold]Response:[/] [{color}]{response}[/]")
+                print(f"[bold]Response:[/] [{color}]{display_response}[/]")
                 print(f"[bold]Expected:[/] {answer}")
                 print(f"[bold]Score:[/] {task_score:g}")
 

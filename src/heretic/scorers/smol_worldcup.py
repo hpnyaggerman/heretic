@@ -303,10 +303,11 @@ class SmolWorldcup(Scorer):
                 if prompt.system:
                     print(f"[bold]System prompt:[/] {prompt.system}")
                 print(f"[bold]Prompt:[/] {prompt.user}")
-                if not response.strip():
-                    response = "[italic]\\[empty][/]"
+                display_response = (
+                    raw_response if raw_response.strip() else "[italic]\\[empty][/]"
+                )
                 color = "green" if task_score >= 1.0 else "red"
-                print(f"[bold]Response:[/] [{color}]{response}[/]")
+                print(f"[bold]Response:[/] [{color}]{display_response}[/]")
                 if category == "hallucination_trap":
                     print("[bold]Expected:[/] trap_detected=true")
                 else:

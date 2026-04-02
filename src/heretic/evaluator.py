@@ -150,28 +150,33 @@ class Evaluator:
 
     def get_scores(self) -> list[tuple[str, Score]]:
         """
-        Run all scorers and return their scores and names
+        Run all scorers and return their scores and names.
 
         Returns:
             List of `Score` from each scorer and its name.
         """
         ctx = Context(settings=self.settings, model=self.model)
-        return [
-            (entry.name, entry.scorer.get_score(ctx)) for entry in self._scorer_entries
-        ]
+        results: list[tuple[str, Score]] = []
+        for entry in self._scorer_entries:
+            print(f"  * Scoring [bold]{entry.name}[/]...")
+            score = entry.scorer.get_score(ctx)
+            results.append((entry.name, score))
+        return results
 
     def get_baseline_scores(self) -> list[tuple[str, Score]]:
         """
-        Run all scorers and return their baseline scores and names
+        Run all scorers and return their baseline scores and names.
 
         Returns:
             List of `Score` from each scorer and its name.
         """
         ctx = Context(settings=self.settings, model=self.model)
-        return [
-            (entry.name, entry.scorer.get_baseline_score(ctx))
-            for entry in self._scorer_entries
-        ]
+        results: list[tuple[str, Score]] = []
+        for entry in self._scorer_entries:
+            print(f"* Computing baseline for [bold]{entry.name}[/]...")
+            score = entry.scorer.get_baseline_score(ctx)
+            results.append((entry.name, score))
+        return results
 
     def get_objective_names(self) -> list[str]:
         """Return objective names for scores used in optimization."""

@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field, field_validator
 from rich.markup import escape
+from rich.progress import Progress
 
 from heretic.config import DatasetSpecification
 from heretic.scorer import Context, Score, Scorer
@@ -217,18 +218,25 @@ class JudgeRefusalRate(Scorer):
         refusal_count = 0
         responses = ctx.get_responses(self.prompts)
 
-        for prompt, response in zip(self.prompts, responses):
-            # Classify empty responses as refusals to avoid optimizing for them.
-            if not response.strip():
-                refusal_count += 1
-                continue
-
-            judge_verdict = self._judge_is_refusal(prompt.user, response)
-            if judge_verdict is not None:
-                if judge_verdict:
+        with Progress(transient=True) as progress:
+            task = progress.add_task(
+                "Judging responses...",
+                total=len(self.prompts),
+            )
+            for prompt, response in zip(self.prompts, responses):
+                # Classify empty responses as refusals to avoid optimizing for them.
+                if not response.strip():
                     refusal_count += 1
-            elif self._marker_is_refusal(response):
-                refusal_count += 1
+                    progress.update(task, advance=1)
+                    continue
+
+                judge_verdict = self._judge_is_refusal(prompt.user, response)
+                if judge_verdict is not None:
+                    if judge_verdict:
+                        refusal_count += 1
+                elif self._marker_is_refusal(response):
+                    refusal_count += 1
+                progress.update(task, advance=1)
 
         return Score(
             value=float(refusal_count / len(self.prompts)),
@@ -270,7 +278,9 @@ class JudgeRefusalRate(Scorer):
         data = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
-        ssl_context = ssl.create_default_context() if url.startswith("https://") else None
+        ssl_context = (
+            ssl.create_default_context() if url.startswith("https://") else None
+        )
 
         with urllib.request.urlopen(
             request, timeout=self.settings.request_timeout, context=ssl_context
@@ -278,8 +288,13 @@ class JudgeRefusalRate(Scorer):
             result = json.loads(http_response.read())
 
         content: str = result["choices"][0]["message"]["content"] or ""
+        reasoning_content: str = (
+            result["choices"][0]["message"].get("reasoning_content") or ""
+        )
 
         if self.settings.print_judge_responses:
+            if reasoning_content:
+                print(f"[bold]Judge reasoning:[/] {escape(reasoning_content)}")
             print(f"[bold]Judge API response:[/] {escape(content)}")
 
         return content
