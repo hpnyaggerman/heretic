@@ -18,7 +18,6 @@ import time
 import warnings
 from dataclasses import asdict
 from importlib.metadata import version
-from os.path import commonprefix
 from pathlib import Path
 from typing import Any
 
@@ -400,20 +399,21 @@ def run():
         settings.batch_size = best_batch_size
         print(f"* Chosen batch size: [bold]{settings.batch_size}[/]")
 
-    print()
-    print("Checking for common response prefix...")
-    prefix_check_prompts = good_prompts[:100] + bad_prompts[:100]
-    responses = model.get_responses_batched(prefix_check_prompts)
-
-    # Despite being located in os.path, commonprefix actually performs
-    # a naive string operation without any path-specific logic,
-    # which is exactly what we need here. Trailing spaces are removed
-    # to avoid issues where multiple different tokens that all start
-    # with a space character lead to the common prefix ending with
-    # a space, which would result in an uncommon tokenization.
-    model.response_prefix = commonprefix(responses).rstrip(" ")
-
-    # NOTE: CoT suppression disabled — thinking tokens are preserved in model output.
+    # NOTE: Common prefix detection and CoT suppression disabled —
+    # thinking tokens are preserved in model output.
+    # print()
+    # print("Checking for common response prefix...")
+    # prefix_check_prompts = good_prompts[:100] + bad_prompts[:100]
+    # responses = model.get_responses_batched(prefix_check_prompts)
+    #
+    # # Despite being located in os.path, commonprefix actually performs
+    # # a naive string operation without any path-specific logic,
+    # # which is exactly what we need here. Trailing spaces are removed
+    # # to avoid issues where multiple different tokens that all start
+    # # with a space character lead to the common prefix ending with
+    # # a space, which would result in an uncommon tokenization.
+    # model.response_prefix = commonprefix(responses).rstrip(" ")
+    #
     # # Suppress CoT output.
     # recheck_prefix = False
     # if model.response_prefix:
@@ -434,13 +434,12 @@ def run():
     #         model.response_prefix = "[THINK][/THINK]"
     #     else:
     #         recheck_prefix = False
-
-    if model.response_prefix:
-        print(f"* Prefix found: [bold]{model.response_prefix!r}[/]")
-    else:
-        print("* None found")
-
-    # # Recheck with prefix (part of CoT suppression, disabled).
+    #
+    # if model.response_prefix:
+    #     print(f"* Prefix found: [bold]{model.response_prefix!r}[/]")
+    # else:
+    #     print("* None found")
+    #
     # if recheck_prefix:
     #     print("* Rechecking with prefix...")
     #     responses = model.get_responses_batched(prefix_check_prompts)
