@@ -371,8 +371,8 @@ class Settings(BaseSettings):
 
     good_prompts: DatasetSpecification = Field(
         default=DatasetSpecification(
-            dataset="mlabonne/harmless_alpaca",
-            split="train[:400]",
+            dataset="VINAY-UMRETHE/Heretic-Harmless",
+            split="train",
             column="text",
             residual_plot_label='"Harmless" prompts',
             residual_plot_color="royalblue",
@@ -382,8 +382,8 @@ class Settings(BaseSettings):
 
     bad_prompts: DatasetSpecification = Field(
         default=DatasetSpecification(
-            dataset="mlabonne/harmful_behaviors",
-            split="train[:400]",
+            dataset="VINAY-UMRETHE/Heretic-Harmful",
+            split="train",
             column="text",
             residual_plot_label='"Harmful" prompts',
             residual_plot_color="darkorange",

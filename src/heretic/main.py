@@ -413,39 +413,41 @@ def run():
     # a space, which would result in an uncommon tokenization.
     model.response_prefix = commonprefix(responses).rstrip(" ")
 
-    # Suppress CoT output.
-    recheck_prefix = False
-    if model.response_prefix:
-        # When using any of the predefined prefixes below, we need to check that
-        # the prefix is actually complete (e.g. not missing a trailing newline).
-        recheck_prefix = True
-        if model.response_prefix.startswith("<think>"):
-            # Most thinking models.
-            model.response_prefix = "<think></think>"
-        elif model.response_prefix.startswith("<|channel|>analysis<|message|>"):
-            # gpt-oss.
-            model.response_prefix = "<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>"
-        elif model.response_prefix.startswith("<thought>"):
-            # Unknown, suggested by user.
-            model.response_prefix = "<thought></thought>"
-        elif model.response_prefix.startswith("[THINK]"):
-            # Unknown, suggested by user.
-            model.response_prefix = "[THINK][/THINK]"
-        else:
-            recheck_prefix = False
+    # NOTE: CoT suppression disabled — thinking tokens are preserved in model output.
+    # # Suppress CoT output.
+    # recheck_prefix = False
+    # if model.response_prefix:
+    #     # When using any of the predefined prefixes below, we need to check that
+    #     # the prefix is actually complete (e.g. not missing a trailing newline).
+    #     recheck_prefix = True
+    #     if model.response_prefix.startswith("<think>"):
+    #         # Most thinking models.
+    #         model.response_prefix = "<think></think>"
+    #     elif model.response_prefix.startswith("<|channel|>analysis<|message|>"):
+    #         # gpt-oss.
+    #         model.response_prefix = "<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>"
+    #     elif model.response_prefix.startswith("<thought>"):
+    #         # Unknown, suggested by user.
+    #         model.response_prefix = "<thought></thought>"
+    #     elif model.response_prefix.startswith("[THINK]"):
+    #         # Unknown, suggested by user.
+    #         model.response_prefix = "[THINK][/THINK]"
+    #     else:
+    #         recheck_prefix = False
 
     if model.response_prefix:
         print(f"* Prefix found: [bold]{model.response_prefix!r}[/]")
     else:
         print("* None found")
 
-    if recheck_prefix:
-        print("* Rechecking with prefix...")
-        responses = model.get_responses_batched(prefix_check_prompts)
-        additional_prefix = commonprefix(responses).rstrip(" ")
-        if additional_prefix:
-            model.response_prefix += additional_prefix
-            print(f"* Extended prefix found: [bold]{model.response_prefix!r}[/]")
+    # # Recheck with prefix (part of CoT suppression, disabled).
+    # if recheck_prefix:
+    #     print("* Rechecking with prefix...")
+    #     responses = model.get_responses_batched(prefix_check_prompts)
+    #     additional_prefix = commonprefix(responses).rstrip(" ")
+    #     if additional_prefix:
+    #         model.response_prefix += additional_prefix
+    #         print(f"* Extended prefix found: [bold]{model.response_prefix!r}[/]")
 
     evaluator = Evaluator(settings, model)
 
