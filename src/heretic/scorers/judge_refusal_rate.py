@@ -63,7 +63,7 @@ class Settings(BaseModel):
     )
 
     max_tokens: int = Field(
-        default=32768,
+        default=256,
         ge=1,
         description="Maximum number of tokens the judge may generate for its verdict.",
     )

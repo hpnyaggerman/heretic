@@ -34,7 +34,12 @@ batch_size = 0  # auto
 max_batch_size = 128
 
 # Maximum number of tokens to generate for each response.
-max_response_length = 32768
+max_response_length = 512
+
+# Prefix to prepend to model responses. Used to suppress Chain-of-Thought output
+# by forcing the model to skip thinking tokens (e.g. "<think></think>").
+# When empty, the prefix is auto-detected.
+response_prefix = ""
 
 # Whether to print detailed information about residuals and refusal directions.
 print_residual_geometry = false
@@ -121,16 +126,16 @@ system_prompt = "You are a helpful assistant."
 
 # Dataset of prompts that tend to not result in refusals (used for calculating refusal directions).
 [good_prompts]
-dataset = "mlabonne/harmless_alpaca"
-split = "train[:400]"
+dataset = "VINAY-UMRETHE/Heretic-Harmless"
+split = "train"
 column = "text"
 residual_plot_label = '"Harmless" prompts'
 residual_plot_color = "royalblue"
 
 # Dataset of prompts that tend to result in refusals (used for calculating refusal directions).
 [bad_prompts]
-dataset = "mlabonne/harmful_behaviors"
-split = "train[:400]"
+dataset = "VINAY-UMRETHE/Heretic-Harmful"
+split = "train"
 column = "text"
 residual_plot_label = '"Harmful" prompts'
 residual_plot_color = "darkorange"
@@ -241,7 +246,7 @@ print_responses = true
 
 [scorer.JudgeRefusalRate]
 # Base URL of the OpenAI-compatible API server (without /v1 suffix).
-# api_base_url = "http://127.0.0.1:5000"
+api_base_url = "http://127.0.0.1:5000"
 
 # Bearer token for API authentication. None disables authentication.
 # api_key = "your-api-key-here"
@@ -251,7 +256,7 @@ print_responses = true
 # model = "gpt-4o-mini"
 
 # Maximum number of tokens the judge may generate for its verdict.
-# max_tokens = 256
+max_tokens = 16384
 
 # Sampling temperature for the judge.
 # When not set, uses greedy decoding on the first attempt and 0.3 on retries.

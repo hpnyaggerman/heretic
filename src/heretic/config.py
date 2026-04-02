@@ -152,8 +152,13 @@ class Settings(BaseSettings):
     )
 
     max_response_length: int = Field(
-        default=32768,
+        default=100,
         description="Maximum number of tokens to generate for each response.",
+    )
+
+    response_prefix: str = Field(
+        default="",
+        description="Prefix to prepend to model responses. Used to suppress Chain-of-Thought output by forcing the model to skip thinking tokens (e.g. '<think></think>'). When empty, the prefix is auto-detected.",
     )
 
     print_residual_geometry: bool = Field(
@@ -371,8 +376,8 @@ class Settings(BaseSettings):
 
     good_prompts: DatasetSpecification = Field(
         default=DatasetSpecification(
-            dataset="VINAY-UMRETHE/Heretic-Harmless",
-            split="train",
+            dataset="mlabonne/harmless_alpaca",
+            split="train[:400]",
             column="text",
             residual_plot_label='"Harmless" prompts',
             residual_plot_color="royalblue",
@@ -382,8 +387,8 @@ class Settings(BaseSettings):
 
     bad_prompts: DatasetSpecification = Field(
         default=DatasetSpecification(
-            dataset="VINAY-UMRETHE/Heretic-Harmful",
-            split="train",
+            dataset="mlabonne/harmful_behaviors",
+            split="train[:400]",
             column="text",
             residual_plot_label='"Harmful" prompts',
             residual_plot_color="darkorange",
