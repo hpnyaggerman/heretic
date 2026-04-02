@@ -152,7 +152,7 @@ class Settings(BaseSettings):
     )
 
     max_response_length: int = Field(
-        default=100,
+        default=32768,
         description="Maximum number of tokens to generate for each response.",
     )
 

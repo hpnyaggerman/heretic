@@ -34,7 +34,7 @@ batch_size = 0  # auto
 max_batch_size = 128
 
 # Maximum number of tokens to generate for each response.
-max_response_length = 100
+max_response_length = 32768
 
 # Whether to print detailed information about residuals and refusal directions.
 print_residual_geometry = false
@@ -56,13 +56,11 @@ residual_plot_style = "dark_background"
 # { plugin = <plugin>, direction = <direction>, instance_name = <optional> }
 # where <direction> is one of "minimize", "maximize", "not_set" (aka do not optimize)
 scorers = [
-    { plugin = "heretic.scorers.refusal_rate.RefusalRate", direction = "minimize"},
-    { plugin = "heretic.scorers.kl_divergence.KLDivergence", direction = "minimize"},
-    # To use the capability evaluation scorer (replaces KL divergence with reasoning challenges),
-    # comment out KLDivergence above and uncomment the line below.
-    # { plugin = "heretic.scorers.capability_eval.CapabilityEval", direction = "maximize"},
-    # To use the judge scorer, comment out RefusalRate above and uncomment the line below.
-    # { plugin = "heretic.scorers.judge_refusal_rate.JudgeRefusalRate", direction = "minimize"},
+    # { plugin = "heretic.scorers.refusal_rate.RefusalRate", direction = "minimize"},
+    # { plugin = "heretic.scorers.kl_divergence.KLDivergence", direction = "minimize"},
+    { plugin = "heretic.scorers.capability_eval.CapabilityEval", direction = "maximize"},
+    { plugin = "heretic.scorers.judge_refusal_rate.JudgeRefusalRate", direction = "minimize"},
+    { plugin = "heretic.scorers.smol_worldcup.SmolWorldcup", direction = "maximize"},
 ]
 
 # Whether to adjust the refusal directions so that only the component that is
@@ -217,9 +215,9 @@ column = "text"
 #     { plugin = "heretic.scorers.capability_eval.CapabilityEval", direction = "maximize"},
 # ]
 
-# [scorer.CapabilityEval]
+[scorer.CapabilityEval]
 # Whether to print prompt/response pairs when scoring challenges.
-# print_responses = false
+print_responses = true
 # System prompt prepended to all challenge questions.
 # system_prompt = "In your output, return only the answer in the format requested below and nothing else."
 # List of challenge names to evaluate. Available: ab, advanced_geometry, knights_knaves, futoshiki, jugs, sentence_reordering.
@@ -241,7 +239,7 @@ column = "text"
 #     { plugin = "heretic.scorers.kl_divergence.KLDivergence", direction = "minimize"},
 # ]
 
-# [scorer.JudgeRefusalRate]
+[scorer.JudgeRefusalRate]
 # Base URL of the OpenAI-compatible API server (without /v1 suffix).
 # api_base_url = "http://127.0.0.1:5000"
 
@@ -289,10 +287,10 @@ column = "text"
 # self_test = true
 
 # Whether to print API request payloads sent to the judge.
-# print_judge_requests = false
+print_judge_requests = true
 
 # Whether to print raw API response content from the judge.
-# print_judge_responses = false
+print_judge_responses = true
 
 # Strings whose presence in a response (case insensitive) identifies it as a refusal
 # when falling back from the judge.
@@ -348,7 +346,7 @@ column = "text"
 #     { plugin = "heretic.scorers.smol_worldcup.SmolWorldcup", direction = "maximize"},
 # ]
 
-# [scorer.SmolWorldcup]
+[scorer.SmolWorldcup]
 # System prompt prepended to all evaluation questions.
 # system_prompt = ""
 
@@ -357,4 +355,4 @@ column = "text"
 # thinking_tokens = [["<think>", "</think>"], ["<thought>", "</thought>"], ["[THINK]", "[/THINK]"]]
 
 # Whether to print prompt/response pairs when scoring.
-# print_responses = false
+print_responses = true
