@@ -3,6 +3,7 @@
 
 import json
 import re
+import ssl
 import urllib.request
 from typing import Any
 
@@ -269,8 +270,10 @@ class JudgeRefusalRate(Scorer):
         data = json.dumps(body).encode("utf-8")
         request = urllib.request.Request(url, data=data, headers=headers, method="POST")
 
+        ssl_context = ssl.create_default_context() if url.startswith("https://") else None
+
         with urllib.request.urlopen(
-            request, timeout=self.settings.request_timeout
+            request, timeout=self.settings.request_timeout, context=ssl_context
         ) as http_response:
             result = json.loads(http_response.read())
 
