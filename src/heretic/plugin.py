@@ -13,18 +13,18 @@ from typing import Annotated, Any, TypeVar, Union, get_args, get_origin, get_typ
 from pydantic import BaseModel
 from torch import Tensor
 
-from heretic.utils import Prompt, load_prompts
-
-from .config import DatasetSpecification
+from .config import DatasetSpecification, SingleDatasetSpecification
 from .config import Settings as HereticSettings
 from .judge import Judge
 from .model import Model, Rollout
+from .utils import Prompt, deep_merge_dicts, load_prompts
 
 T = TypeVar("T")
 
 
 def get_plugin_namespace(
-    model_extra: dict[str, Any] | None, namespace: str
+    model_extra: dict[str, Any] | None,
+    namespace: str,
 ) -> dict[str, Any]:
     """
     Returns the config dict from the `[<namespace>]` TOML table.
@@ -52,7 +52,7 @@ def is_builtin_plugin(name: str) -> bool:
     plugins (file paths or third-party import paths) disable the reproducibility
     offer during upload.
     """
-    return name.startswith("heretic.scorers.")
+    return name.startswith("heretic.")
 
 
 def load_plugin(
@@ -150,12 +150,8 @@ def load_plugin(
 
 class Context:
     """
-    Runtime context passed to plugins
-
-    Provides plugin-safe access to the model.
-
-    Plugins must use `get_responses(...)`, `get_logits(...)`, etc.
-    Direct access to the underlying Model is intentionally not exposed.
+    Runtime context passed to plugins.
+    Acts as a quasi-API for plugins to access Heretic functionality.
     """
 
     def __init__(
@@ -199,6 +195,13 @@ class Context:
     def get_residuals(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_residuals_batched(prompts)
 
+    def get_model(self) -> Model:
+        """
+        Prefer managed methods (`get_responses` etc.) unless you
+        actually need access to the model object.
+        """
+        return self._model
+
     def load_prompts(self, specification: DatasetSpecification) -> list[Prompt]:
         return load_prompts(self._settings, specification)
 
@@ -230,8 +233,11 @@ class Plugin:
         return False
 
     def __init__(
-        self, *, heretic_settings: HereticSettings, settings: BaseModel | None = None
-    ):
+        self,
+        *,
+        heretic_settings: HereticSettings,
+        settings: BaseModel | None = None,
+    ) -> None:
         # Plugins that declare a settings schema should always receive
         # validated plugin settings from the evaluator.
         settings_model = self.__class__.get_settings_model()
@@ -300,8 +306,45 @@ class Plugin:
         return model
 
     @classmethod
+    def get_settings_raw(
+        cls,
+        model_extra: dict[str, Any] | None,
+        top_namespace: str,
+        instance_name: str | None,
+    ) -> dict[str, Any]:
+        """
+        Build the raw settings dict for a plugin class and optional instance.
+
+        Config rules:
+        - Base settings live in `[<top_namespace>.ClassName]` (applies to all instances).
+        - Instance overrides live in `[<top_namespace>.ClassName_<instance_name>]` (preferred).
+        - Only merge/validate keys that exist in the plugin Settings schema.
+        """
+        settings_model = cls.get_settings_model()
+        if settings_model is None:
+            # No settings schema: nothing to merge/validate.
+            return {}
+
+        class_name = cls.__name__
+
+        namespaces = [f"{top_namespace}.{class_name}"]
+        if instance_name:
+            namespaces.append(f"{top_namespace}.{class_name}_{instance_name}")
+
+        merged_settings: dict[str, Any] = {}
+        allowed_keys = set(settings_model.model_fields.keys())
+
+        for namespace in namespaces:
+            raw_table = get_plugin_namespace(model_extra, namespace)
+            filtered = {k: v for k, v in raw_table.items() if k in allowed_keys}
+            merged_settings = deep_merge_dicts(merged_settings, filtered)
+
+        return merged_settings
+
+    @classmethod
     def validate_settings(
-        cls, raw_namespace: dict[str, Any] | None
+        cls,
+        raw_namespace: dict[str, Any] | None,
     ) -> BaseModel | None:
         """
         Validates plugin settings for this plugin class.
@@ -313,6 +356,23 @@ class Plugin:
         if settings_model is None:
             return None
         return settings_model.model_validate(raw_namespace or {})
+
+    def get_dataset_specifications(self) -> list[DatasetSpecification]:
+        """
+        Collect the dataset specifications declared in the settings
+        of the plugin.
+        """
+        if self.settings is None:
+            return []
+        specifications = []
+        for value in dict(self.settings).values():
+            if isinstance(value, SingleDatasetSpecification) or (
+                isinstance(value, list)
+                and len(value) > 0
+                and isinstance(value[0], SingleDatasetSpecification)
+            ):
+                specifications.append(value)
+        return specifications
 
     def init(self, ctx: Context) -> None:
         """
