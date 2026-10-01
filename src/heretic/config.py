@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 from enum import Enum
-from typing import Dict, Literal
+from typing import Any, Dict, Literal
 
 from pydantic import (
     BaseModel,
@@ -304,6 +304,95 @@ class Settings(BaseSettings):
         # When storing a settings object, the response prefix is already fixed,
         # either determined by the automatic mechanism or by explicit user choice.
         exclude=True,
+    )
+
+    thinking: bool = Field(
+        default=False,
+        description=(
+            "Whether to evaluate the model with thinking enabled, so that scorers see "
+            "full thinking-then-answer rollouts, and residual directions and KL divergence "
+            "are measured after the thinking opener and any text that all responses share after it."
+        ),
+    )
+
+    thinking_closer: str | None = Field(
+        default=None,
+        description=(
+            'Text that closes the model\'s thinking block (e.g. "</think>"). '
+            "If not set, it is determined from chain_of_thought_skips while the response prefix "
+            "is detected, so it must be set whenever response_prefix is set."
+        ),
+    )
+
+    max_thinking_length: PositiveInt = Field(
+        default=4096,
+        description="Maximum number of thinking tokens per response before the thinking block is closed by force.",
+    )
+
+    thinking_chunk_size: PositiveInt = Field(
+        default=256,
+        description="Number of tokens to generate between judge checks of a thinking-mode rollout.",
+    )
+
+    thinking_sampling: Literal["model", "greedy"] = Field(
+        default="model",
+        description=(
+            "How thinking-mode rollouts are decoded. Options: "
+            '"model" (sampling parameters from the model\'s generation config), '
+            '"greedy" (greedy decoding).'
+        ),
+    )
+
+    thinking_generation_kwargs: Dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Additional generation arguments for thinking-mode rollouts (e.g. do_sample, temperature, top_p, "
+            "repetition_penalty), applied last, on top of the model's generation config and of thinking_sampling."
+        ),
+    )
+
+    thinking_judge: Literal["none", "shieldstral", "openrouter"] = Field(
+        default="none",
+        description=(
+            "Judge used to retire degenerate rollouts in thinking mode. Options: "
+            '"none" (no judge), '
+            '"shieldstral" (local classifier downloaded from Hugging Face), '
+            '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable).'
+        ),
+    )
+
+    judge_threshold: float = Field(
+        default=0.5,
+        description="Judge probability above which a rollout is retired.",
+    )
+
+    judge_criteria: str = Field(
+        default=(
+            "Degenerate output is repetitive, stuck in a loop, incoherent, in a different "
+            "language than the request, or drifting away from the request."
+        ),
+        description="Criteria the judge applies when deciding whether the model output so far is degenerate.",
+    )
+
+    judge_first_chunk_only: bool = Field(
+        default=False,
+        description=(
+            "Whether to judge only the first thinking chunk and let rollouts that pass it "
+            "think to the end unjudged. The answer is still judged."
+        ),
+    )
+
+    openrouter_model: str | None = Field(
+        default=None,
+        description='OpenRouter model ID used when thinking_judge is "openrouter". Required in that case.',
+    )
+
+    judge_model_commit: str | None = Field(
+        default=None,
+        description=(
+            "Hugging Face commit hash of the Shieldstral judge model. If not set, it is fetched "
+            "from the Hub when the judge is loaded, which requires internet access."
+        ),
     )
 
     print_debug_information: bool = Field(

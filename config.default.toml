@@ -68,6 +68,54 @@ chain_of_thought_skips = [
     ],
 ]
 
+# Whether to evaluate the model with thinking enabled, so that scorers see full
+# thinking-then-answer rollouts, and residual directions and KL divergence are
+# measured after the thinking opener and any text that all responses share after it.
+thinking = false
+
+# Text that closes the model's thinking block (e.g. "</think>").
+# If not set, it is determined from chain_of_thought_skips while the response prefix
+# is detected, so it must be set whenever response_prefix is set.
+# thinking_closer = "</think>"
+
+# Maximum number of thinking tokens per response before the thinking block is closed by force.
+max_thinking_length = 4096
+
+# Number of tokens to generate between judge checks of a thinking-mode rollout.
+thinking_chunk_size = 256
+
+# How thinking-mode rollouts are decoded. Options:
+# "model" (sampling parameters from the model's generation config),
+# "greedy" (greedy decoding).
+thinking_sampling = "model"
+
+# Additional generation arguments for thinking-mode rollouts (e.g. do_sample, temperature, top_p,
+# repetition_penalty), applied last, on top of the model's generation config and of thinking_sampling.
+thinking_generation_kwargs = {}
+
+# Judge used to retire degenerate rollouts in thinking mode. Options:
+# "none" (no judge),
+# "shieldstral" (local classifier downloaded from Hugging Face),
+# "openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable).
+thinking_judge = "none"
+
+# Judge probability above which a rollout is retired.
+judge_threshold = 0.5
+
+# Criteria the judge applies when deciding whether the model output so far is degenerate.
+judge_criteria = "Degenerate output is repetitive, stuck in a loop, incoherent, in a different language than the request, or drifting away from the request."
+
+# Whether to judge only the first thinking chunk and let rollouts that pass it
+# think to the end unjudged. The answer is still judged.
+judge_first_chunk_only = false
+
+# OpenRouter model ID used when thinking_judge is "openrouter". Required in that case.
+# openrouter_model = "<provider>/<model>"
+
+# Hugging Face commit hash of the Shieldstral judge model. If not set, it is fetched
+# from the Hub when the judge is loaded, which requires internet access.
+# judge_model_commit = "<commit hash>"
+
 # Whether to print additional information that can help with debugging.
 print_debug_information = false
 
@@ -93,6 +141,8 @@ residual_plot_style = "dark_background"
 scorers = [
     { plugin = "heretic.scorers.keyword_rate.KeywordRate", optimization = "minimize"},
     { plugin = "heretic.scorers.kl_divergence.KLDivergence", optimization = "minimize"},
+    # In thinking mode, this scorer reports the fraction of rollouts retired by the judge:
+    # { plugin = "heretic.scorers.incoherence_rate.IncoherenceRate", optimization = "none"},
 ]
 
 # Whether to adjust the residual directions so that only the component that is
@@ -229,3 +279,13 @@ column = "text"
 dataset = "mlabonne/harmless_alpaca"
 split = "test[:100]"
 column = "text"
+
+# Settings for the optional thinking-mode incoherence scorer.
+# [scorer.IncoherenceRate]
+# Whether to print the thinking and answer of each rollout.
+# print_rollouts = false
+#
+# [scorer.IncoherenceRate.prompts]
+# dataset = "mlabonne/harmful_behaviors"
+# split = "test[:100]"
+# column = "text"

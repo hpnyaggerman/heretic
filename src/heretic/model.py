@@ -3,7 +3,7 @@
 
 import math
 from contextlib import suppress
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Type, cast
 
 import bitsandbytes as bnb
@@ -32,6 +32,7 @@ from transformers.generation import (
 )
 
 from .config import QuantizationMethod, RowNormalization, Settings
+from .judge import Judge
 from .system import empty_cache
 from .utils import Prompt, batchify, format_exception, print
 
@@ -53,6 +54,30 @@ class AbliterationParameters:
     max_weight_position: float
     min_weight: float
     min_weight_distance: float
+
+
+@dataclass
+class Rollout:
+    thinking: str
+    answer: str
+    retired: bool
+
+
+@dataclass
+class _RolloutState:
+    prompt: Prompt
+    prompt_ids: list[int]
+    # None while the thinking block is open; otherwise where the answer starts.
+    closer_end: int | None
+    generated: list[int] = field(default_factory=list)
+    judged_length: int = 0
+    done: bool = False
+    retired: bool = False
+
+    def remaining(self, settings: Settings) -> int:
+        if self.closer_end is None:
+            return settings.max_thinking_length - len(self.generated)
+        return self.closer_end + settings.max_response_length - len(self.generated)
 
 
 class Model:
@@ -618,11 +643,11 @@ class Model:
                     weight_A.data = lora_A.to(weight_A.dtype)
                     weight_B.data = lora_B.to(weight_B.dtype)
 
-    def generate(
-        self,
-        prompts: list[Prompt],
-        **kwargs: Any,
-    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
+    def template_kwargs(self) -> dict[str, Any]:
+        # Passed only in thinking mode so that non-thinking prompts stay byte-identical.
+        return {"enable_thinking": True} if self.settings.thinking else {}
+
+    def _chat_prompts(self, prompts: list[Prompt]) -> list[str]:
         chats = [
             [
                 {"role": "system", "content": prompt.system},
@@ -639,6 +664,7 @@ class Model:
                 chats,
                 add_generation_prompt=True,
                 tokenize=False,
+                **self.template_kwargs(),
             ),
         )
 
@@ -649,8 +675,15 @@ class Model:
                 prompt + self.settings.response_prefix for prompt in chat_prompts
             ]
 
+        return chat_prompts
+
+    def generate(
+        self,
+        prompts: list[Prompt],
+        **kwargs: Any,
+    ) -> tuple[BatchEncoding, GenerateDecoderOnlyOutput | LongTensor]:
         inputs = self.tokenizer(
-            chat_prompts,
+            self._chat_prompts(prompts),
             return_tensors="pt",
             padding=True,
             return_token_type_ids=False,
@@ -666,6 +699,223 @@ class Model:
         )  # ty:ignore[call-non-callable]
 
         return inputs, outputs
+
+    def generate_ids(
+        self,
+        sequences: list[list[int]],
+        max_new_tokens: int,
+        stop_ids: list[int],
+        stop_string: str | None,
+    ) -> list[tuple[list[int], int | None]]:
+        inputs = self.tokenizer.pad(
+            {"input_ids": sequences},
+            padding=True,
+            return_tensors="pt",
+        ).to(self.model.device)
+
+        # Reseeding makes each rollout independent of what was generated before it.
+        torch.manual_seed(self.settings.seed)
+        outputs = self.model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            eos_token_id=stop_ids,
+            pad_token_id=self.tokenizer.pad_token_id,
+            stop_strings=[stop_string] if stop_string else None,
+            tokenizer=self.tokenizer,
+            **self.sampling_kwargs(),
+        )  # ty:ignore[call-non-callable]
+
+        results = []
+        prompt_length = inputs["input_ids"].shape[1]
+        for row in cast(Tensor, outputs)[:, prompt_length:].tolist():
+            # Padding only follows a stop token, so the first one is the true end.
+            stop = next((token for token in row if token in stop_ids), None)
+            results.append((row if stop is None else row[: row.index(stop)], stop))
+
+        return results
+
+    def sampling_kwargs(self) -> dict[str, Any]:
+        if self.settings.thinking_sampling == "greedy":
+            return {"do_sample": False, **self.settings.thinking_generation_kwargs}
+        return dict(self.settings.thinking_generation_kwargs)
+
+    def thinking_closer_ids(self) -> tuple[list[int], int | None]:
+        closer = self.settings.thinking_closer
+        ids = self.tokenizer.encode(closer, add_special_tokens=False) if closer else []
+        # Only a dedicated token can be a stop id; an ordinary token would stop
+        # generation spuriously, so other closers are matched as text.
+        if ids and ids[0] in self.tokenizer.get_added_vocab().values():
+            return ids, ids[0]
+        return ids, None
+
+    def get_rollouts(
+        self,
+        prompts: list[Prompt],
+        judge: Judge | None,
+    ) -> list[Rollout]:
+        settings = self.settings
+        closer_ids, stop_id = self.thinking_closer_ids()
+        stop_string = (
+            settings.thinking_closer if closer_ids and stop_id is None else None
+        )
+
+        eos = self.model.generation_config.eos_token_id
+        stop_ids = (
+            list(eos) if isinstance(eos, list) else ([] if eos is None else [eos])
+        )
+        if stop_id is not None:
+            stop_ids.append(stop_id)
+
+        states = [
+            _RolloutState(
+                prompt=prompt,
+                # This cast is valid because a single unpadded string yields a list of ids.
+                prompt_ids=cast(
+                    list[int],
+                    self.tokenizer(
+                        chat_prompt,
+                        return_token_type_ids=False,
+                    )["input_ids"],
+                ),
+                closer_end=None if closer_ids else 0,
+            )
+            for prompt, chat_prompt in zip(prompts, self._chat_prompts(prompts))
+        ]
+
+        while active := [state for state in states if not state.done]:
+            thinking = [state for state in active if state.closer_end is None]
+            answering = [state for state in active if state.closer_end is not None]
+            groups = [(thinking, True), (answering, True)]
+            if settings.judge_first_chunk_only:
+                # Rollouts that passed the first-chunk gate think to the end in one call.
+                groups = [
+                    ([state for state in thinking if state.judged_length == 0], True),
+                    ([state for state in thinking if state.judged_length > 0], False),
+                    (answering, True),
+                ]
+            for group, chunked in groups:
+                for batch in batchify(group, settings.batch_size):
+                    self._advance(
+                        batch,
+                        closer_ids,
+                        stop_id,
+                        stop_ids,
+                        stop_string,
+                        judge,
+                        chunked,
+                    )
+
+        return [self._rollout(state, closer_ids) for state in states]
+
+    def _closer_start(self, ids: list[int], closer: str) -> int | None:
+        if closer not in self.tokenizer.decode(ids, skip_special_tokens=True):
+            return None
+        # Generation stops right after the closer, so it is found near the end.
+        return next(
+            start
+            for start in range(len(ids) - 1, -1, -1)
+            if closer in self.tokenizer.decode(ids[start:], skip_special_tokens=True)
+        )
+
+    def _advance(
+        self,
+        batch: list[_RolloutState],
+        closer_ids: list[int],
+        stop_id: int | None,
+        stop_ids: list[int],
+        stop_string: str | None,
+        judge: Judge | None,
+        chunked: bool,
+    ):
+        settings = self.settings
+        max_new_tokens = max(state.remaining(settings) for state in batch)
+        if judge is not None and chunked:
+            max_new_tokens = min(max_new_tokens, settings.thinking_chunk_size)
+        results = self.generate_ids(
+            [state.prompt_ids + state.generated for state in batch],
+            max_new_tokens,
+            stop_ids,
+            stop_string,
+        )
+
+        for state, (new_ids, stop) in zip(batch, results):
+            budget = state.remaining(settings)
+            if len(new_ids) > budget:
+                new_ids, stop = new_ids[:budget], None
+            state.generated.extend(new_ids)
+
+            closed = stop is not None and stop == stop_id
+            if stop_string is not None:
+                offset = state.closer_end or 0
+                start = self._closer_start(state.generated[offset:], stop_string)
+                if start is not None:
+                    del state.generated[offset + start :]
+                    closed = True
+
+            if state.closer_end is None:
+                if closed or len(state.generated) >= settings.max_thinking_length:
+                    state.generated.extend(closer_ids)
+                    state.closer_end = len(state.generated)
+                elif stop is not None:
+                    state.done = True
+            elif closed or stop is not None or state.remaining(settings) <= 0:
+                state.done = True
+
+        if judge is None:
+            return
+
+        judged = []
+        texts = []
+        for state in batch:
+            if state.done and state.closer_end is None:
+                continue
+            if len(state.generated) == state.judged_length:
+                continue
+            if (
+                settings.judge_first_chunk_only
+                and state.closer_end is None
+                and state.judged_length > 0
+            ):
+                continue
+            segment = (
+                state.generated
+                if state.closer_end is None
+                else state.generated[state.closer_end :]
+            )
+            # decode returns a string for a flat list of ids.
+            text = cast(str, self.tokenizer.decode(segment, skip_special_tokens=True))
+            if text.strip():
+                state.judged_length = len(state.generated)
+                judged.append(state)
+                texts.append(text)
+
+        if judged:
+            scores = judge.score([state.prompt.user for state in judged], texts)
+            for state, score in zip(judged, scores):
+                if score > settings.judge_threshold:
+                    state.done = True
+                    state.retired = True
+
+    def _rollout(self, state: _RolloutState, closer_ids: list[int]) -> Rollout:
+        if state.closer_end is None:
+            thinking_ids, answer_ids = state.generated, []
+        else:
+            thinking_ids = state.generated[: state.closer_end - len(closer_ids)]
+            answer_ids = state.generated[state.closer_end :]
+
+        answer = (
+            ""
+            if state.retired
+            else cast(str, self.tokenizer.decode(answer_ids, skip_special_tokens=True))
+        )
+
+        return Rollout(
+            thinking=cast(
+                str, self.tokenizer.decode(thinking_ids, skip_special_tokens=True)
+            ),
+            answer=answer,
+            retired=state.retired,
+        )
 
     def get_responses(
         self,
@@ -830,6 +1080,7 @@ class Model:
                 chat,
                 add_generation_prompt=True,
                 tokenize=False,
+                **self.template_kwargs(),
             ),
         )
 

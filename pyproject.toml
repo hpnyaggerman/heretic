@@ -30,6 +30,7 @@ dependencies = [
     "langdetect~=1.0",
     "lm-eval[hf]~=0.4",
     "numpy~=2.2",
+    "openrouter~=1.1",
     "optuna~=4.7",
     "peft~=0.19",
     "psutil~=7.2",

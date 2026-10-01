@@ -8,6 +8,7 @@ from optuna.study import StudyDirection
 from pydantic import BaseModel
 
 from .config import DatasetSpecification, ScorerConfig, Settings
+from .judge import load_judge
 from .model import Model
 from .plugin import get_plugin_namespace, is_builtin_plugin, load_plugin
 from .scorer import Context, Score, Scorer
@@ -35,6 +36,7 @@ class Evaluator:
         self.settings = settings
         self.model = model
         self._scorer_entries: list[ScorerEntry] = []
+        self.judge = load_judge(settings) if settings.thinking else None
 
         print()
         print("Loading and initializing scorers...")
@@ -45,6 +47,8 @@ class Evaluator:
         self.baseline_scores = self.get_baseline_scores()
         for name, score in self.baseline_scores:
             print(f"* Baseline [bold]{name}:[/] [green]{score.rich_display}[/]")
+        if self.judge is not None:
+            print(self.judge.usage())
 
     def _load_and_init_scorers(self) -> None:
         """
@@ -105,7 +109,7 @@ class Evaluator:
             )
 
         # Run scorer init hooks.
-        ctx = Context(settings=self.settings, model=self.model)
+        ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
 
         for entry in self._scorer_entries:
             entry.scorer.init(ctx)
@@ -179,7 +183,7 @@ class Evaluator:
         Returns:
             List of `Score` from each scorer and its name.
         """
-        ctx = Context(settings=self.settings, model=self.model)
+        ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
         return [
             (entry.name, entry.scorer.get_score(ctx)) for entry in self._scorer_entries
         ]
@@ -191,7 +195,7 @@ class Evaluator:
         Returns:
             List of `Score` from each scorer and its name.
         """
-        ctx = Context(settings=self.settings, model=self.model)
+        ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
         return [
             (entry.name, entry.scorer.get_baseline_score(ctx))
             for entry in self._scorer_entries

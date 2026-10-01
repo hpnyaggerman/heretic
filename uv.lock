@@ -1048,6 +1048,7 @@ dependencies = [
     { name = "lm-eval", extra = ["hf"] },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.3.5", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+    { name = "openrouter" },
     { name = "optuna" },
     { name = "peft" },
     { name = "psutil" },
@@ -1091,6 +1092,7 @@ requires-dist = [
     { name = "lm-eval", extras = ["hf"], specifier = "~=0.4" },
     { name = "matplotlib", marker = "extra == 'research'", specifier = "~=3.10" },
     { name = "numpy", specifier = "~=2.2" },
+    { name = "openrouter", specifier = "~=1.1" },
     { name = "optuna", specifier = "~=4.7" },
     { name = "pacmap", marker = "extra == 'research'", specifier = "~=0.8" },
     { name = "peft", specifier = "~=0.19" },
@@ -1257,6 +1259,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/35/87/bcda8e46c88d0e34cad2f09ee2d0c7f5957bccdb9791b0b934ec84d84be4/jsonlines-4.0.0.tar.gz", hash = "sha256:0c6d2c09117550c089995247f605ae4cf77dd1533041d366351f6f298822ea74", size = 11359, upload-time = "2023-09-01T12:34:44.187Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f8/62/d9ba6323b9202dd2fe166beab8a86d29465c41a0288cbe229fac60c1ab8d/jsonlines-4.0.0-py3-none-any.whl", hash = "sha256:185b334ff2ca5a91362993f42e83588a360cf95ce4b71a73548502bda52a7c55", size = 8701, upload-time = "2023-09-01T12:34:42.563Z" },
+]
+
+[[package]]
+name = "jsonpath-python"
+version = "1.1.6"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/18/4ca8742534a5993ff383f7602e325ce2d5d7cc93d72ac5e1cdedbea8a458/jsonpath_python-1.1.6.tar.gz", hash = "sha256:dded9932b4ec41fb8726e09c83afa4e6be618f938c2db287cc2a81723c639671", size = 88178, upload-time = "2026-05-07T01:26:34.482Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/8a/1270a6803bd821cbfcdda387eaa13cb41a7b1f7b9bd145979b3bfb9d6cb7/jsonpath_python-1.1.6-py3-none-any.whl", hash = "sha256:a1c50afd8d3fbbaf47a4873bc890dcb3c15da96f5c020327977d844d8731a2d4", size = 14453, upload-time = "2026-05-07T01:26:33.306Z" },
 ]
 
 [[package]]
@@ -2337,6 +2348,21 @@ source = { registry = "https://pypi.org/simple" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/c2/f3/d86c845465a2723ad7e1e5c36dcd75ddb82898b3f53be47ebd429fb2fa5d/nvidia_nvtx-13.0.85-py3-none-manylinux1_x86_64.manylinux_2_5_x86_64.whl", hash = "sha256:4936d1d6780fbe68db454f5e72a42ff64d1fd6397df9f363ae786930fd5c1cd4", size = 148047, upload-time = "2025-09-04T08:29:01.761Z" },
     { url = "https://files.pythonhosted.org/packages/a8/64/3708a90d1ebe202ffdeb7185f878a3c84d15c2b2c31858da2ce0583e2def/nvidia_nvtx-13.0.85-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:cb7780edb6b14107373c835bf8b72e7a178bac7367e23da7acb108f973f157a6", size = 148878, upload-time = "2025-09-04T08:28:53.627Z" },
+]
+
+[[package]]
+name = "openrouter"
+version = "1.1.136"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "httpcore" },
+    { name = "httpx" },
+    { name = "jsonpath-python" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/07/52/b09ba5b98c93d30f5c60185f644895626f4c8ccec63cc20ace75186d4d45/openrouter-1.1.136.tar.gz", hash = "sha256:2b98f2cad7e4876cc72098cccaf54be1b649f557351e82fb5f530910576bcee8", size = 454167, upload-time = "2026-09-09T21:31:14.607Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/68/95/3b3d0b7fb5643050c0615181b1fbc7dd8e2b299116b21bab79507a7791a7/openrouter-1.1.136-py3-none-any.whl", hash = "sha256:2ea335121a7da7bd672685f33c6c875d9183e91f769a8182c7383fa6260567f9", size = 975133, upload-time = "2026-09-09T21:31:13.266Z" },
 ]
 
 [[package]]

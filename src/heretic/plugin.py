@@ -17,7 +17,8 @@ from heretic.utils import Prompt, load_prompts
 
 from .config import DatasetSpecification
 from .config import Settings as HereticSettings
-from .model import Model
+from .judge import Judge
+from .model import Model, Rollout
 
 T = TypeVar("T")
 
@@ -157,22 +158,40 @@ class Context:
     Direct access to the underlying Model is intentionally not exposed.
     """
 
-    def __init__(self, settings: HereticSettings, model: Model) -> None:
+    def __init__(
+        self,
+        settings: HereticSettings,
+        model: Model,
+        judge: Judge | None = None,
+    ) -> None:
         self._model = model
         self._settings = settings
+        self._judge = judge
         self._responses_cache: dict[tuple[tuple[str, str], ...], list[str]] = {}
+        self._rollouts_cache: dict[tuple[tuple[str, str], ...], list[Rollout]] = {}
 
     def _cache_key(self, prompts: list[Prompt]) -> tuple[tuple[str, str], ...]:
         return tuple((p.system, p.user) for p in prompts)
 
     def get_responses(self, prompts: list[Prompt]) -> list[str]:
         """Get model responses (cached within this context)."""
+        if self._settings.thinking:
+            return [rollout.answer for rollout in self.get_rollouts(prompts)]
         key = self._cache_key(prompts)
         if key not in self._responses_cache:
             self._responses_cache[key] = self._model.get_responses_batched(
                 prompts, skip_special_tokens=True
             )
         return self._responses_cache[key]
+
+    def get_rollouts(self, prompts: list[Prompt]) -> list[Rollout]:
+        """Get thinking-mode rollouts (cached within this context)."""
+        if not self._settings.thinking:
+            raise RuntimeError("Rollouts require thinking mode")
+        key = self._cache_key(prompts)
+        if key not in self._rollouts_cache:
+            self._rollouts_cache[key] = self._model.get_rollouts(prompts, self._judge)
+        return self._rollouts_cache[key]
 
     def get_logits(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_logits_batched(prompts)

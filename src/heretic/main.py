@@ -493,6 +493,7 @@ def run():
                 [{"role": "user", "content": "This is a dummy prompt."}],
                 add_generation_prompt=True,
                 tokenize=False,
+                **model.template_kwargs(),
             ),
         )
 
@@ -506,12 +507,21 @@ def run():
             match = re.search(pattern, dummy_prompt)
 
             if match:
-                # We use only the closed CoT block here. Any whitespaces
-                # will be handled by the 'Rechecking with prefix' logic below.
-                settings.response_prefix = closed_cot_block
-                print(
-                    f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
-                )
+                if settings.thinking:
+                    # An empty prefix keeps the block that the template opened.
+                    settings.response_prefix = ""
+                    settings.thinking_closer = (
+                        settings.thinking_closer
+                        or closed_cot_block[len(cot_initializer) :]
+                    )
+                    print("* Thinking enabled by chat template")
+                else:
+                    # We use only the closed CoT block here. Any whitespaces
+                    # will be handled by the 'Rechecking with prefix' logic below.
+                    settings.response_prefix = closed_cot_block
+                    print(
+                        f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
+                    )
                 cot_skip_applied = True
                 break
 
@@ -541,10 +551,20 @@ def run():
                     closed_cot_block,
                 ) in settings.chain_of_thought_skips:
                     if settings.response_prefix.startswith(cot_initializer):
-                        settings.response_prefix = closed_cot_block
-                        print(
-                            f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
-                        )
+                        if settings.thinking:
+                            settings.response_prefix = cot_initializer
+                            settings.thinking_closer = (
+                                settings.thinking_closer
+                                or closed_cot_block[len(cot_initializer) :]
+                            )
+                            print(
+                                f"* Thinking opener kept: [bold]{escape(repr(settings.response_prefix))}[/]"
+                            )
+                        else:
+                            settings.response_prefix = closed_cot_block
+                            print(
+                                f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
+                            )
                         cot_skip_applied = True
                         break
             else:
@@ -562,6 +582,24 @@ def run():
                     f"* Extended prefix found: [bold]{escape(repr(settings.response_prefix))}[/]"
                 )
 
+    if settings.thinking:
+        if not model.thinking_closer_ids()[0]:
+            print()
+            print(
+                "[yellow]No thinking opener was detected: rollouts are answers only, capped at "
+                f"max_response_length tokens, with response prefix {escape(repr(settings.response_prefix))}. "
+                "If the model thinks with an unlisted opener, add its pair to chain_of_thought_skips; "
+                "if response_prefix is set by hand, set thinking_closer too.[/]"
+            )
+
+        generation_config = model.model.generation_config
+        sampling = {
+            name: getattr(generation_config, name, None)
+            for name in ("do_sample", "temperature", "top_p", "top_k", "min_p")
+        }
+        sampling.update(model.sampling_kwargs())
+        print(f"* Thinking-mode sampling: [bold]{escape(repr(sampling))}[/]")
+
     evaluator = Evaluator(settings, model)
 
     if settings.evaluate_model is not None:
@@ -572,6 +610,8 @@ def run():
         print("* Evaluating...")
         for name, score in evaluator.get_scores():
             print(f"  * [bold]{name}:[/] [green]{score.rich_display}[/]")
+        if evaluator.judge is not None:
+            print(evaluator.judge.usage())
         return
 
     if not reproduction_mode and not evaluator.get_objective_names():
@@ -752,6 +792,8 @@ def run():
             evaluator.get_paired_score_records(scores),
         )
         print_memory_usage()
+        if evaluator.judge is not None:
+            print(evaluator.judge.usage())
 
         return objective_values
 
@@ -1161,7 +1203,8 @@ def run():
                             # that all datasets are pinned to a commit (an unpinned
                             # dataset was likely loaded from a local cache), and that
                             # only built-in scorer plugins are used (external plugins
-                            # cannot be resolved when reproducing).
+                            # cannot be resolved when reproducing), and that no remote
+                            # judge was used (its verdicts cannot be reproduced).
                             dataset_specifications = [
                                 settings.good_prompts,
                                 settings.bad_prompts,
@@ -1177,6 +1220,10 @@ def run():
                                 and evaluator.all_scorers_reproducible()
                                 and evaluator.all_scorers_builtin()
                                 and not reproduction_mode
+                                and not (
+                                    settings.thinking
+                                    and settings.thinking_judge == "openrouter"
+                                )
                             )
 
                             if is_reproducible:
