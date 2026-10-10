@@ -4,10 +4,11 @@
 # Arbitrary-Rank Ablation (ARA) (Weidmann 2026)
 # See https://github.com/p-e-w/heretic/pull/211 for more information.
 
+import math
 from dataclasses import asdict, dataclass
 from typing import Any, cast
 
-import bitsandbytes as bnb
+import bitsandbytes.functional as BNB_F
 import torch
 import torch.linalg as LA
 import torch.nn.functional as F
@@ -188,6 +189,9 @@ class ARA(Modifier[Parameters]):
         bad_prompts = ctx.load_prompts(self.settings.bad_prompts)
         print(f"* [bold]{len(bad_prompts)}[/] prompts loaded")
 
+        self.good_prompt_count = len(good_prompts)
+        self.bad_prompt_count = len(bad_prompts)
+
         print()
         print("Obtaining module I/O for good prompts...")
         self.good_module_io = model.get_module_io_batched(good_prompts)
@@ -208,9 +212,11 @@ class ARA(Modifier[Parameters]):
             0,
             layer_count // 2,
         )
+        # The end index is exclusive, so starting its range one above the start range's
+        # upper bound ensures that the layer range is never empty.
         end_layer_index = trial.suggest_int(
             "end_layer_index",
-            layer_count // 2,
+            layer_count // 2 + 1,
             layer_count,
         )
         preserve_good_behavior_weight = trial.suggest_float(
@@ -229,10 +235,12 @@ class ARA(Modifier[Parameters]):
             0.0,
             1.3,
         )
+        # The nearest neighbors are selected from the outputs for the good and bad prompts,
+        # which contain one vector per prompt, so there can't be more neighbors than prompts.
         neighbor_count = trial.suggest_int(
             "neighbor_count",
             1,
-            15,
+            min(15, self.good_prompt_count, self.bad_prompt_count),
         )
 
         return Parameters(
@@ -246,6 +254,11 @@ class ARA(Modifier[Parameters]):
 
     def modify_model(self, ctx: Context, parameters: Parameters) -> None:
         model = ctx.get_model()
+
+        # The model's reset zeroes both A and B, where all gradients vanish,
+        # so A must be initialized below for the optimization to make progress.
+        # Generating on the CPU keeps A independent of the device and the global RNG state.
+        generator = torch.Generator().manual_seed(cast(int, self.heretic_settings.seed))
 
         for layer_index in range(
             parameters.start_layer_index,
@@ -264,13 +277,10 @@ class ARA(Modifier[Parameters]):
                         W_base = base_weight.to(torch.float32)
                     else:
                         # Use the original dequantization logic from bitsandbytes.
-                        W_base = cast(
-                            Tensor,
-                            bnb.functional.dequantize_4bit(  # ty:ignore[possibly-missing-attribute]
-                                base_weight.data,
-                                quant_state,
-                            ).to(torch.float32),
-                        )
+                        W_base = BNB_F.dequantize_4bit(
+                            base_weight.data,
+                            quant_state,
+                        ).to(torch.float32)
 
                     # Pre-calculate the original row norms to preserve them.
                     # See https://huggingface.co/blog/grimjim/norm-preserving-biprojected-abliteration
@@ -282,6 +292,17 @@ class ARA(Modifier[Parameters]):
                     # We optimize the LoRA weights A and B.
                     lora_A = cast(Tensor, module.lora_A["default"].weight)
                     lora_B = cast(Tensor, module.lora_B["default"].weight)
+
+                    # Initialize A the same way PEFT does, but deterministically. See
+                    # https://github.com/huggingface/peft/blob/v0.21.2/src/peft/tuners/lora/layer.py#L338
+                    initial_A = torch.empty(lora_A.shape)
+                    torch.nn.init.kaiming_uniform_(
+                        initial_A,
+                        a=math.sqrt(5),
+                        generator=generator,
+                    )
+                    with torch.no_grad():
+                        lora_A.copy_(initial_A)
 
                     # Move I/O tensors to the device of the adapter weights.
                     good_input, good_output = self.good_module_io[layer_index][

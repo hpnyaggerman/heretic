@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
-from typing import Any, Callable, Type, TypeAlias, cast
+from datetime import datetime, timezone
+from typing import Any, TypeAlias, cast
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
@@ -24,7 +26,7 @@ from transformers import (
     TextStreamer,
 )
 from transformers.generation import (
-    GenerateDecoderOnlyOutput,  # ty:ignore[possibly-missing-import]
+    GenerateDecoderOnlyOutput,
 )
 
 from .config import QuantizationMethod, Settings
@@ -35,13 +37,20 @@ from .utils import Prompt, batchify, format_exception, print
 
 def get_model_class(
     model: str,
-) -> Type[AutoModelForImageTextToText] | Type[AutoModelForCausalLM]:
+) -> type[AutoModelForImageTextToText] | type[AutoModelForCausalLM]:
     configs = PretrainedConfig.get_config_dict(model)
 
-    if any([("vision_config" in config) for config in configs]):
+    if any(("vision_config" in config) for config in configs):
         return AutoModelForImageTextToText
     else:
         return AutoModelForCausalLM
+
+
+# Some chat templates (e.g. gpt-oss) insert the current date into the prompt,
+# which makes the residuals, and therefore the modified model, depend on the day
+# Heretic is run. Rendering templates with a fixed date keeps results reproducible.
+def strftime_fixed_date(format: str) -> str:
+    return datetime(2026, 1, 1, tzinfo=timezone.utc).strftime(format)
 
 
 # The list contains one element per layer.
@@ -94,9 +103,14 @@ class Model:
         print()
         print(f"Loading model [bold]{settings.model}[/]...")
 
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            settings.model,
-            **self.revision_kwargs,
+        # PreTrainedTokenizerBase is the "base class for all tokenizer backends"
+        # according to the documentation.
+        self.tokenizer = cast(
+            PreTrainedTokenizerBase,
+            AutoTokenizer.from_pretrained(
+                settings.model,
+                **self.revision_kwargs,
+            ),
         )
 
         # Multimodal models have a processor we'll want to save.
@@ -116,7 +130,7 @@ class Model:
         #           after the prompt and thinks the sequence is complete.
         self.tokenizer.padding_side = "left"
 
-        self.model = None  # ty:ignore[invalid-assignment]
+        self.model = None
         self.max_memory = (
             {int(k) if k.isdigit() else k: v for k, v in settings.max_memory.items()}
             if settings.max_memory
@@ -169,7 +183,7 @@ class Model:
                     max_new_tokens=1,
                 )
             except Exception as error:
-                self.model = None  # ty:ignore[invalid-assignment]
+                self.model = None
                 empty_cache()
 
                 formatted = format_exception(error)
@@ -240,6 +254,15 @@ class Model:
         # self.peft_config is a LoraConfig object rather than a dictionary,
         # so the result is a PeftModel rather than a PeftMixedModel.
         self.model = cast(PeftModel, get_peft_model(self.model, self.peft_config))
+
+        # PEFT initializes A randomly from the global RNG. B is zero, so this doesn't
+        # change the model, but zeroing A too keeps saved adapters reproducible.
+        self._zero_lora_weights()
+
+    def _zero_lora_weights(self):
+        for name, module in self.model.named_modules():
+            if ("lora_A" in name or "lora_B" in name) and hasattr(module, "weight"):
+                torch.nn.init.zeros_(module.weight)
 
     def _get_quantization_config(self, dtype: str) -> BitsAndBytesConfig | None:
         """
@@ -335,13 +358,13 @@ class Model:
 
         if current_model == self.settings.model and not self.needs_reload:
             # Reset LoRA adapters to zero (identity transformation).
-            for name, module in self.model.named_modules():
-                if "lora_B" in name and hasattr(module, "weight"):
-                    torch.nn.init.zeros_(module.weight)
+            # Zeroing A as well ensures that adapter weights of modules not modified
+            # by the next trial don't depend on what previous trials did.
+            self._zero_lora_weights()
             return True
 
         # Purge existing model object from memory to make space.
-        self.model = None  # ty:ignore[invalid-assignment]
+        self.model = None
         empty_cache()
 
         quantization_config = self._get_quantization_config(
@@ -378,10 +401,10 @@ class Model:
 
         # Most multimodal models.
         with suppress(Exception):
-            return model.model.language_model.layers
+            return model.model.language_model.layers  # ty: ignore[unresolved-attribute, invalid-return-type]
 
         # Text-only models.
-        return model.model.layers
+        return model.model.layers  # ty: ignore[unresolved-attribute, invalid-return-type]
 
     def get_layer_modules(self, layer_index: int) -> dict[str, list[Module]]:
         layer = self.get_layers()[layer_index]
@@ -402,50 +425,50 @@ class Model:
 
         # Standard self-attention out-projection (most models).
         with suppress(Exception):
-            try_add("attn.o_proj", layer.self_attn.o_proj)  # ty:ignore[possibly-missing-attribute]
+            try_add("attn.o_proj", layer.self_attn.o_proj)  # ty: ignore[unresolved-attribute]
 
         # Qwen3.5 MoE hybrid layers use GatedDeltaNet (linear attention) instead of
         # standard self-attention, so self_attn.o_proj doesn't exist on those layers.
         with suppress(Exception):
-            try_add("attn.o_proj", layer.linear_attn.out_proj)  # ty:ignore[possibly-missing-attribute]
+            try_add("attn.o_proj", layer.linear_attn.out_proj)  # ty: ignore[unresolved-attribute]
 
         # Most dense models.
         with suppress(Exception):
-            try_add("mlp.down_proj", layer.mlp.down_proj)  # ty:ignore[possibly-missing-attribute]
+            try_add("mlp.down_proj", layer.mlp.down_proj)  # ty: ignore[unresolved-attribute]
 
         # Some MoE models (e.g. Qwen3).
         with suppress(Exception):
-            for expert in layer.mlp.experts:  # ty:ignore[possibly-missing-attribute, not-iterable]
-                try_add("mlp.down_proj", expert.down_proj)  # ty:ignore[possibly-missing-attribute]
+            for expert in layer.mlp.experts:  # ty:ignore[not-iterable, unresolved-attribute]
+                try_add("mlp.down_proj", expert.down_proj)  # ty: ignore[unresolved-attribute]
 
         # Phi-3.5-MoE (and possibly others).
         with suppress(Exception):
-            for expert in layer.block_sparse_moe.experts:  # ty:ignore[possibly-missing-attribute, not-iterable]
-                try_add("mlp.down_proj", expert.w2)  # ty:ignore[possibly-missing-attribute]
+            for expert in layer.block_sparse_moe.experts:  # ty:ignore[not-iterable, unresolved-attribute]
+                try_add("mlp.down_proj", expert.w2)  # ty: ignore[unresolved-attribute]
 
         # LFM dense operator blocks.
         with suppress(Exception):
-            try_add("attn.o_proj", layer.conv.out_proj)  # ty:ignore[possibly-missing-attribute]
+            try_add("attn.o_proj", layer.conv.out_proj)  # ty: ignore[unresolved-attribute]
 
         with suppress(Exception):
-            try_add("mlp.down_proj", layer.feed_forward.w2)  # ty:ignore[possibly-missing-attribute]
+            try_add("mlp.down_proj", layer.feed_forward.w2)  # ty: ignore[unresolved-attribute]
 
         # LFM transformer blocks.
         with suppress(Exception):
-            try_add("attn.o_proj", layer.self_attn.out_proj)  # ty:ignore[possibly-missing-attribute]
+            try_add("attn.o_proj", layer.self_attn.out_proj)  # ty: ignore[unresolved-attribute]
 
         with suppress(Exception):
-            for expert in layer.feed_forward.experts:  # ty:ignore[possibly-missing-attribute, not-iterable]
-                try_add("mlp.down_proj", expert.w2)  # ty:ignore[possibly-missing-attribute]
+            for expert in layer.feed_forward.experts:  # ty:ignore[not-iterable, unresolved-attribute]
+                try_add("mlp.down_proj", expert.w2)  # ty: ignore[unresolved-attribute]
 
         # Granite MoE Hybrid - attention layers with shared_mlp.
         with suppress(Exception):
-            try_add("mlp.down_proj", layer.shared_mlp.output_linear)  # ty:ignore[possibly-missing-attribute]
+            try_add("mlp.down_proj", layer.shared_mlp.output_linear)  # ty: ignore[unresolved-attribute]
 
         # Granite MoE Hybrid - MoE layers with experts.
         with suppress(Exception):
-            for expert in layer.moe.experts:  # ty:ignore[possibly-missing-attribute, not-iterable]
-                try_add("mlp.down_proj", expert.output_linear)  # ty:ignore[possibly-missing-attribute]
+            for expert in layer.moe.experts:  # ty:ignore[not-iterable, unresolved-attribute]
+                try_add("mlp.down_proj", expert.output_linear)  # ty: ignore[unresolved-attribute]
 
         # We need at least one module across all components for abliteration to work.
         total_modules = sum(len(mods) for mods in modules.values())
@@ -484,6 +507,8 @@ class Model:
                 chats,
                 add_generation_prompt=True,
                 tokenize=False,
+                # Overrides the function that templates call to get the current date.
+                strftime_now=strftime_fixed_date,
                 **self.template_kwargs(),
             ),
         )
@@ -763,11 +788,12 @@ class Model:
         responses = []
 
         for batch in batchify(prompts, self.settings.batch_size):
-            for response in self.get_responses(
-                batch,
-                skip_special_tokens=skip_special_tokens,
-            ):
-                responses.append(response)
+            responses.extend(
+                self.get_responses(
+                    batch,
+                    skip_special_tokens=skip_special_tokens,
+                )
+            )
 
         return responses
 
@@ -1061,7 +1087,7 @@ class Model:
             # The TextStreamer constructor annotates this parameter with the AutoTokenizer
             # type, which makes no sense because AutoTokenizer is a factory class,
             # not a base class that tokenizers inherit from.
-            self.tokenizer,  # ty:ignore[invalid-argument-type]
+            self.tokenizer,
             skip_prompt=True,
             skip_special_tokens=True,
         )

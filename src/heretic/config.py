@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 from enum import Enum
-from typing import Any, Dict, Literal, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -254,12 +254,12 @@ class Settings(BaseSettings):
         ),
     )
 
-    device_map: str | Dict[str, int | str] = Field(
+    device_map: str | dict[str, int | str] = Field(
         default="auto",
         description="Device map to pass to Accelerate when loading the model.",
     )
 
-    max_memory: Dict[str, str] | None = Field(
+    max_memory: dict[str, str] | None = Field(
         default=None,
         description='Maximum memory to allocate per device (e.g., { "0" = "20GB", "cpu" = "64GB" }).',
     )
@@ -402,7 +402,7 @@ class Settings(BaseSettings):
         ),
     )
 
-    thinking_generation_kwargs: Dict[str, Any] = Field(
+    thinking_generation_kwargs: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "Additional generation arguments for thinking-mode rollouts (e.g. do_sample, temperature, top_p, "

@@ -7,6 +7,7 @@ import os
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 
 import httpx
 import huggingface_hub
@@ -14,7 +15,12 @@ import torch
 from openrouter import OpenRouter, components
 from openrouter.types import UNSET
 from rich.markup import escape
-from transformers import AutoTokenizer, Mistral3ForConditionalGeneration
+from transformers import (
+    AutoTokenizer,
+    BatchEncoding,
+    Mistral3ForConditionalGeneration,
+    PreTrainedTokenizerBase,
+)
 
 from .config import Settings
 from .utils import print
@@ -60,8 +66,11 @@ class ShieldstralJudge(Judge):
         if commit is None:
             raise RuntimeError(f"No commit hash for {SHIELDSTRAL_MODEL}")
         settings.judge_model_commit = commit
-        self.tokenizer = AutoTokenizer.from_pretrained(
-            SHIELDSTRAL_MODEL, revision=commit
+        # PreTrainedTokenizerBase is the "base class for all tokenizer backends"
+        # according to the documentation.
+        self.tokenizer = cast(
+            PreTrainedTokenizerBase,
+            AutoTokenizer.from_pretrained(SHIELDSTRAL_MODEL, revision=commit),
         )
         self.model = Mistral3ForConditionalGeneration.from_pretrained(
             SHIELDSTRAL_MODEL,
@@ -86,10 +95,15 @@ class ShieldstralJudge(Judge):
                     ),
                 },
             ]
-            inputs = self.tokenizer.apply_chat_template(
-                messages,
-                return_tensors="pt",
-                return_dict=True,
+            # This cast is valid because BatchEncoding is the return type
+            # with tokenize=True (the default) and return_dict=True.
+            inputs = cast(
+                BatchEncoding,
+                self.tokenizer.apply_chat_template(
+                    messages,
+                    return_tensors="pt",
+                    return_dict=True,
+                ),
             ).to(self.model.device)
 
             logits = self.model(**inputs).logits[0, -1].float()
@@ -100,7 +114,8 @@ class ShieldstralJudge(Judge):
             yes, no = -1e9, -1e9
             values, indices = logprobs.topk(20)
             for logprob, token_id in zip(values.tolist(), indices.tolist()):
-                token = self.tokenizer.decode([token_id]).strip().lower()
+                # decode returns a string for a flat list of ids.
+                token = cast(str, self.tokenizer.decode([token_id])).strip().lower()
                 if token in self.YES:
                     yes = max(yes, logprob)
                 elif token in self.NO:
@@ -180,7 +195,7 @@ class OpenRouterJudge(Judge):
     def _verdict(result: components.ChatResult) -> float:
         verdict = json.loads(str(result.choices[0].message.content))["degenerate"]
         if not isinstance(verdict, bool):
-            raise ValueError(f"Judge verdict is not a boolean: {verdict!r}")
+            raise TypeError(f"Judge verdict is not a boolean: {verdict!r}")
         return float(verdict)
 
     def score(self, requests: list[str], texts: list[str]) -> list[float]:

@@ -1,9 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
-# ruff: noqa: E402
-
+import os
 import sys
+
+# Enable expandable segments to reduce memory fragmentation on multi-GPU setups.
+if (
+    "PYTORCH_ALLOC_CONF" not in os.environ
+    and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ
+):
+    os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
+
+# Silence warning spam from PyTorch's C++ logging.
+if "TORCH_CPP_LOG_LEVEL" not in os.environ:
+    os.environ["TORCH_CPP_LOG_LEVEL"] = "ERROR"
 
 # Ensure standard output/error use UTF-8 instead of system default charmap (e.g. cp1252 on Windows).
 for stream in (sys.stdout, sys.stderr):
@@ -12,6 +22,7 @@ for stream in (sys.stdout, sys.stderr):
         and (getattr(stream, "encoding", "") or "").lower() != "utf-8"
     ):
         stream.reconfigure(encoding="utf-8")  # type: ignore
+
 
 from .config import Settings
 
@@ -23,7 +34,8 @@ def _is_help_invocation() -> bool:
 
 # Parse and handle CLI help before importing heavyweight ML/runtime dependencies.
 if _is_help_invocation():
-    Settings()  # ty:ignore[missing-argument]
+    Settings()
+
 
 # FIXME: Rich progress bars are currently disabled because of rendering issues
 #        when used from multiple threads in parallel (e.g. by huggingface_hub).
@@ -37,7 +49,6 @@ patch_tqdm()
 
 import logging
 import math
-import os
 import random
 import re
 import time
@@ -182,13 +193,6 @@ def obtain_export_strategy(
 
 
 def run():
-    # Enable expandable segments to reduce memory fragmentation on multi-GPU setups.
-    if (
-        "PYTORCH_ALLOC_CONF" not in os.environ
-        and "PYTORCH_CUDA_ALLOC_CONF" not in os.environ
-    ):
-        os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
-
     # Modified "Pagga" font from https://budavariam.github.io/asciiart-text/
     print(f"[cyan]█░█░█▀▀░█▀▄░█▀▀░▀█▀░█░█▀▀[/]  v{version('heretic-llm')}")
     print(
@@ -223,7 +227,7 @@ def run():
     try:
         # The required argument "model" must be provided by the user,
         # either on the command line or in the configuration file.
-        settings = Settings()  # ty:ignore[missing-argument]
+        settings = Settings()
     except ValidationError as error:
         print(f"[red]Configuration contains [bold]{error.error_count()}[/] errors:[/]")
 
@@ -251,12 +255,10 @@ def run():
 
         if reproduction_information["version"] != "4":
             print(
-                (
-                    f"[red]Unsupported file format version: [bold]{reproduction_information['version']}[/].[/] "
-                    "This version of Heretic reads version 4 (plugin-based) reproduce.json files. "
-                    "Older files were produced before the introduction of the plugin system and are not supported. "
-                    "Please install Heretic 1.4 to use these files."
-                )
+                f"[red]Unsupported file format version: [bold]{reproduction_information['version']}[/].[/] "
+                "This version of Heretic reads version 4 (plugin-based) reproduce.json files. "
+                "Older files were produced before the introduction of the plugin system and are not supported. "
+                "Please install Heretic 1.4 to use these files."
             )
             return
 
@@ -339,12 +341,10 @@ def run():
             if settings.checkpoint_action is None:
                 print()
                 print(
-                    (
-                        "[green]You have already processed this model.[/] "
-                        "You can show the results from the previous run, allowing you to export models or to run additional trials. "
-                        "Alternatively, you can ignore the previous run and start from scratch. "
-                        "This will delete the checkpoint file and all results from the previous run."
-                    )
+                    "[green]You have already processed this model.[/] "
+                    "You can show the results from the previous run, allowing you to export models or to run additional trials. "
+                    "Alternatively, you can ignore the previous run and start from scratch. "
+                    "This will delete the checkpoint file and all results from the previous run."
                 )
 
             choices.append(
@@ -357,12 +357,10 @@ def run():
             if settings.checkpoint_action is None:
                 print()
                 print(
-                    (
-                        "[yellow]You have already processed this model, but the run was interrupted.[/] "
-                        "You can continue the previous run from where it stopped. This will override any specified settings. "
-                        "Alternatively, you can ignore the previous run and start from scratch. "
-                        "This will delete the checkpoint file and all results from the previous run."
-                    )
+                    "[yellow]You have already processed this model, but the run was interrupted.[/] "
+                    "You can continue the previous run from where it stopped. This will override any specified settings. "
+                    "Alternatively, you can ignore the previous run and start from scratch. "
+                    "This will delete the checkpoint file and all results from the previous run."
                 )
 
             choices.append(
@@ -813,12 +811,10 @@ def run():
             if settings.trial_index is None:
                 print()
                 print(
-                    (
-                        "The following trials resulted in Pareto optimal combinations of the optimization objectives. "
-                        "After selecting a trial, you will be able to save the model, upload it to Hugging Face, "
-                        "chat with it to test how well it works, or run standard benchmarks on it. "
-                        "You can return to this menu later to select a different trial. "
-                    )
+                    "The following trials resulted in Pareto optimal combinations of the optimization objectives. "
+                    "After selecting a trial, you will be able to save the model, upload it to Hugging Face, "
+                    "chat with it to test how well it works, or run standard benchmarks on it. "
+                    "You can return to this menu later to select a different trial. "
                 )
 
         while trial_loop_active:
@@ -1124,13 +1120,11 @@ def run():
                             if is_reproducible:
                                 if settings.upload_reproducibility_information is None:
                                     print(
-                                        (
-                                            "Heretic can add information to the repository that allows others to reproduce the model. "
-                                            "This is optional, but valuable to the community as both a learning tool and to preserve computational work already done. "
-                                            "Guaranteeing reproducibility requires basic system information (Python and OS version, CPU and GPU/accelerator info) "
-                                            "as tensor operations can give different results in different system environments. "
-                                            "[bold]The information does not include any file system paths or other private data.[/]"
-                                        )
+                                        "Heretic can add information to the repository that allows others to reproduce the model. "
+                                        "This is optional, but valuable to the community as both a learning tool and to preserve computational work already done. "
+                                        "Guaranteeing reproducibility requires basic system information (Python and OS version, CPU and GPU/accelerator info) "
+                                        "as tensor operations can give different results in different system environments. "
+                                        "[bold]The information does not include any file system paths or other private data.[/]"
                                     )
 
                                 reproducibility_information = ask_if_unset(
@@ -1162,7 +1156,7 @@ def run():
                             if strategy == ExportStrategy.ADAPTER:
                                 print("Uploading LoRA adapter...")
                                 model.model.push_to_hub(
-                                    repo_id,
+                                    repo_id,  # ty: ignore[invalid-argument-type]
                                     private=private,
                                     max_shard_size=settings.max_shard_size,
                                     token=token,
@@ -1171,7 +1165,7 @@ def run():
                                 print("Uploading merged model...")
                                 merged_model = model.get_merged_model()
                                 merged_model.push_to_hub(
-                                    repo_id,
+                                    repo_id,  # ty: ignore[invalid-argument-type]
                                     private=private,
                                     max_shard_size=settings.max_shard_size,
                                     token=token,
@@ -1366,7 +1360,7 @@ def run():
                             benchmark_original_model = scope == "Benchmark both models"
 
                             hflm = HFLM(
-                                pretrained=model.model,  # ty:ignore[invalid-argument-type]
+                                pretrained=model.model,
                                 tokenizer=model.tokenizer,  # ty:ignore[invalid-argument-type]
                                 batch_size="auto",
                             )
@@ -1379,6 +1373,15 @@ def run():
                                 table.add_column("Original model", justify="right")
                             else:
                                 table.add_column("Value", justify="right")
+
+                            def format_value(value: Any) -> str:
+                                if isinstance(
+                                    value,
+                                    (float, np.floating),
+                                ):
+                                    return f"{value:.4f}"
+                                else:
+                                    return f"{value}"
 
                             try:
                                 first_benchmark = True
@@ -1403,37 +1406,29 @@ def run():
                                     first_row = True
 
                                     for metric, value in results.items():
-                                        if metric != "alias":
-                                            if first_row and not first_benchmark:
-                                                if benchmark_original_model:
-                                                    table.add_row("", "", "", "")
-                                                else:
-                                                    table.add_row("", "", "")
+                                        # Skip non-metrics.
+                                        if metric in ["name", "alias", "sample_len"]:
+                                            continue
 
-                                            def format_value(value: Any) -> str:
-                                                if isinstance(
-                                                    value,
-                                                    (float, np.floating),
-                                                ):
-                                                    return f"{value:.4f}"
-                                                else:
-                                                    return f"{value}"
-
-                                            cells = [
-                                                benchmark.name if first_row else "",
-                                                metric,
-                                                format_value(value),
-                                            ]
+                                        if first_row and not first_benchmark:
                                             if benchmark_original_model:
-                                                cells.append(
-                                                    format_value(
-                                                        original_results[metric]
-                                                    )
-                                                )
-                                            table.add_row(*cells)
+                                                table.add_row("", "", "", "")
+                                            else:
+                                                table.add_row("", "", "")
 
-                                            first_row = False
-                                            first_benchmark = False
+                                        cells = [
+                                            benchmark.name if first_row else "",
+                                            metric,
+                                            format_value(value),
+                                        ]
+                                        if benchmark_original_model:
+                                            cells.append(
+                                                format_value(original_results[metric])
+                                            )
+                                        table.add_row(*cells)
+
+                                        first_row = False
+                                        first_benchmark = False
                             except KeyboardInterrupt:
                                 pass
 

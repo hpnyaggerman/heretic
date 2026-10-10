@@ -344,7 +344,7 @@ class LLMJudge(Scorer):
 
             arguments = json.loads(tool_call.function.arguments)
             if not isinstance(arguments, dict):
-                raise ValueError(f"Judge arguments are not an object: {arguments!r}")
+                raise TypeError(f"Judge arguments are not an object: {arguments!r}")
 
             labels = [
                 label
