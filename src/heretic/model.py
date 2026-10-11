@@ -53,6 +53,13 @@ def strftime_fixed_date(format: str) -> str:
     return datetime(2026, 1, 1, tzinfo=timezone.utc).strftime(format)
 
 
+# gpt-oss (harmony) answers on the final channel but makes tool calls on the commentary
+# channel. For prompts with tools, the response prefix and the thinking closer therefore
+# stop before this header, leaving the channel to the model, and the header is removed
+# from answers on the final channel.
+HARMONY_FINAL_HEADER = "<|channel|>final<|message|>"
+
+
 # The list contains one element per layer.
 # Each element maps from the component name to a (possibly sparse) mapping
 # from the module index to an (input, output) tuple containing the I/O
@@ -74,6 +81,8 @@ class _RolloutState:
     # None while the thinking block is open; otherwise where the answer starts.
     closer_end: int | None
     generated: list[int] = field(default_factory=list)
+    # Number of tokens appended to close the thinking block.
+    closer_length: int = 0
     judged_length: int = 0
     done: bool = False
     retired: bool = False
@@ -491,36 +500,57 @@ class Model:
         return {"enable_thinking": True} if self.settings.thinking else {}
 
     def _chat_prompts(self, prompts: list[Prompt]) -> list[str]:
-        chats = [
-            [
-                {"role": "system", "content": prompt.system},
-                {"role": "user", "content": prompt.user},
-            ]
+        chat_prompts = [
+            # This cast is valid because str is the return type
+            # for a single chat operation with tokenize=False.
+            cast(
+                str,
+                self.tokenizer.apply_chat_template(
+                    [
+                        {"role": "system", "content": prompt.system},
+                        {"role": "user", "content": prompt.user},
+                    ],
+                    # This cast is valid because the template only reads the list.
+                    tools=cast(list[dict | Callable] | None, prompt.tools),
+                    add_generation_prompt=True,
+                    tokenize=False,
+                    # Overrides the function that templates call to get the current date.
+                    strftime_now=strftime_fixed_date,
+                    **self.template_kwargs(),
+                ),
+            )
             for prompt in prompts
         ]
-
-        # This cast is valid because list[str] is the return type
-        # for batched operation with tokenize=False.
-        chat_prompts = cast(
-            list[str],
-            self.tokenizer.apply_chat_template(
-                chats,
-                add_generation_prompt=True,
-                tokenize=False,
-                # Overrides the function that templates call to get the current date.
-                strftime_now=strftime_fixed_date,
-                **self.template_kwargs(),
-            ),
-        )
 
         if self.settings.response_prefix:
             # Append the common response prefix to the prompts so that evaluation happens
             # at the point where responses start to differ for different prompts.
             chat_prompts = [
-                prompt + self.settings.response_prefix for prompt in chat_prompts
+                chat_prompt
+                + (
+                    self.settings.response_prefix.removesuffix(HARMONY_FINAL_HEADER)
+                    if prompt.tools
+                    else self.settings.response_prefix
+                )
+                for prompt, chat_prompt in zip(prompts, chat_prompts)
             ]
 
         return chat_prompts
+
+    def _final_header_length(self, ids: list[int], prompt: Prompt) -> int:
+        """
+        Length of the harmony final channel header at the start of `ids`
+        if the prompt has tools, otherwise 0.
+        """
+        header = self.tokenizer.encode(HARMONY_FINAL_HEADER, add_special_tokens=False)
+        return len(header) if prompt.tools and ids[: len(header)] == header else 0
+
+    def _closer_for(self, closer_ids: list[int], prompt: Prompt) -> list[int]:
+        """The thinking closer without the harmony final channel header if the prompt has tools."""
+        header = self.tokenizer.encode(HARMONY_FINAL_HEADER, add_special_tokens=False)
+        if prompt.tools and closer_ids[-len(header) :] == header:
+            return closer_ids[: -len(header)]
+        return closer_ids
 
     def generate(
         self,
@@ -650,7 +680,7 @@ class Model:
                         chunked,
                     )
 
-        return [self._rollout(state, closer_ids) for state in states]
+        return [self._rollout(state) for state in states]
 
     def _closer_start(self, ids: list[int], closer: str) -> int | None:
         if closer not in self.tokenizer.decode(ids, skip_special_tokens=True):
@@ -699,7 +729,9 @@ class Model:
 
             if state.closer_end is None:
                 if closed or len(state.generated) >= settings.max_thinking_length:
-                    state.generated.extend(closer_ids)
+                    closer = self._closer_for(closer_ids, state.prompt)
+                    state.generated.extend(closer)
+                    state.closer_length = len(closer)
                     state.closer_end = len(state.generated)
                 elif stop is not None:
                     state.done = True
@@ -723,9 +755,7 @@ class Model:
             ):
                 continue
             segment = (
-                state.generated
-                if state.closer_end is None
-                else state.generated[state.closer_end :]
+                state.generated if state.closer_end is None else self._answer_ids(state)
             )
             # decode returns a string for a flat list of ids.
             text = cast(str, self.tokenizer.decode(segment, skip_special_tokens=True))
@@ -741,12 +771,17 @@ class Model:
                     state.done = True
                     state.retired = True
 
-    def _rollout(self, state: _RolloutState, closer_ids: list[int]) -> Rollout:
+    def _answer_ids(self, state: _RolloutState) -> list[int]:
+        assert state.closer_end is not None
+        answer_ids = state.generated[state.closer_end :]
+        return answer_ids[self._final_header_length(answer_ids, state.prompt) :]
+
+    def _rollout(self, state: _RolloutState) -> Rollout:
         if state.closer_end is None:
             thinking_ids, answer_ids = state.generated, []
         else:
-            thinking_ids = state.generated[: state.closer_end - len(closer_ids)]
-            answer_ids = state.generated[state.closer_end :]
+            thinking_ids = state.generated[: state.closer_end - state.closer_length]
+            answer_ids = self._answer_ids(state)
 
         answer = (
             ""
@@ -772,11 +807,16 @@ class Model:
             max_new_tokens=self.settings.max_response_length,
         )
 
+        # Extract the newly generated part.
+        # This cast is valid because the input_ids property is a Tensor
+        # if the tokenizer is invoked with return_tensors="pt", as above.
+        rows = outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :].tolist()
+
         return self.tokenizer.batch_decode(
-            # Extract the newly generated part.
-            # This cast is valid because the input_ids property is a Tensor
-            # if the tokenizer is invoked with return_tensors="pt", as above.
-            outputs[:, cast(Tensor, inputs["input_ids"]).shape[1] :],
+            [
+                row[self._final_header_length(row, prompt) :]
+                for prompt, row in zip(prompts, rows)
+            ],
             skip_special_tokens=skip_special_tokens,
         )
 

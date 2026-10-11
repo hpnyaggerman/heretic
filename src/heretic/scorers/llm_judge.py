@@ -16,10 +16,52 @@ from rich.markup import escape
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import format_dataset_specification, print
+from heretic.utils import Prompt, format_dataset_specification, print
 
 TOOL_NAME = "submit_category"
 ARGUMENT_NAME = "category"
+
+# The judged model must submit its answer with this tool, so that the score also
+# reflects whether abliteration has damaged its instruction following.
+ANSWER_TOOL_NAME = "submit_answer"
+ANSWER_INSTRUCTION = (
+    f"Submit your complete answer by calling the {ANSWER_TOOL_NAME} tool."
+)
+ANSWER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": ANSWER_TOOL_NAME,
+        "description": "Submit your answer to the user's request.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "answer": {
+                    "type": "string",
+                    "description": "Your complete answer.",
+                },
+            },
+            "required": ["answer"],
+        },
+    },
+}
+# The answer argument up to its closing quote or, if the call was cut off, the end of the text.
+ANSWER_PATTERN = re.compile(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)')
+
+
+def get_submitted_answer(text: str) -> str | None:
+    """
+    Returns the answer argument of the first submit_answer call in the text, or None
+    if there is no such call. The call is located loosely, so that it is found in any
+    chat template's tool call syntax, including a call cut off by the response length limit.
+    """
+    start = text.find(ANSWER_TOOL_NAME)
+    match = None if start < 0 else ANSWER_PATTERN.search(text, start)
+    if match is None:
+        return None
+    try:
+        return json.loads(f'"{match.group(1)}"', strict=False)
+    except ValueError:
+        return match.group(1)
 
 
 def normalize_identifier(identifier: str) -> str:
@@ -188,6 +230,9 @@ class LLMJudge(Scorer):
     In thinking mode, the thinking and the response of each rollout are judged in
     separate requests, each with its own prompt and categories, and the score is
     the mean of the two mean values.
+
+    The judged model is instructed to submit its answer with a submit_answer tool call,
+    and an answer submitted any other way is judged as an empty response.
     """
 
     settings: Settings
@@ -228,8 +273,25 @@ class LLMJudge(Scorer):
         print(
             f"Loading {self.settings.score_name} evaluation prompts from [bold]{format_dataset_specification(self.settings.prompts)}[/]..."
         )
-        self.prompts = ctx.load_prompts(self.settings.prompts)
+        self.prompts = [
+            Prompt(
+                system=f"{prompt.system} {ANSWER_INSTRUCTION}".strip(),
+                user=prompt.user,
+                tools=[ANSWER_TOOL],
+            )
+            for prompt in ctx.load_prompts(self.settings.prompts)
+        ]
         print(f"* [bold]{len(self.prompts)}[/] prompts loaded")
+
+        tokenizer = ctx.get_model().tokenizer
+        chat = [{"role": "user", "content": self.prompts[0].user}]
+        if tokenizer.apply_chat_template(
+            chat, tools=[ANSWER_TOOL], tokenize=False
+        ) == tokenizer.apply_chat_template(chat, tokenize=False):
+            raise ValueError(
+                f"The chat template of {self.heretic_settings.model} ignores tools, "
+                f"so the model cannot submit its answers with the {ANSWER_TOOL_NAME} tool."
+            )
 
     def get_score(self, ctx: Context) -> Score:
         total = len(self.prompts)
@@ -239,11 +301,15 @@ class LLMJudge(Scorer):
             thinking_categories = self.settings.thinking_categories
             assert thinking_prompt is not None and thinking_categories is not None
 
+            rollouts = ctx.get_rollouts(self.prompts)
+            # An answer not submitted with the tool counts as no answer.
+            answers = [get_submitted_answer(rollout.answer) for rollout in rollouts]
+            missing = sum(answer is None for answer in answers)
             transcripts = [
                 f"[User request]\n{prompt.user}\n\n"
                 f"[Thinking]\n{rollout.thinking}\n\n"
-                f"[Response]\n{rollout.answer}"
-                for prompt, rollout in zip(self.prompts, ctx.get_rollouts(self.prompts))
+                f"[Response]\n{answer or ''}"
+                for prompt, rollout, answer in zip(self.prompts, rollouts, answers)
             ]
             values = self._judge(
                 [thinking_prompt] * total + [self.settings.response_prompt] * total,
@@ -256,14 +322,23 @@ class LLMJudge(Scorer):
 
             return Score(
                 value=(thinking_value + response_value) / 2,
-                rich_display=f"[bold]{thinking_value:.4f}[/] thinking, [bold]{response_value:.4f}[/] response",
-                md_display=f"{thinking_value:.4f} thinking, {response_value:.4f} response",
-                components={"thinking": thinking_value, "response": response_value},
+                rich_display=f"[bold]{thinking_value:.4f}[/] thinking, [bold]{response_value:.4f}[/] response, [bold]{missing}[/]/{total} without tool call",
+                md_display=f"{thinking_value:.4f} thinking, {response_value:.4f} response, {missing}/{total} without tool call",
+                components={
+                    "thinking": thinking_value,
+                    "response": response_value,
+                    "missing_tool_calls": missing / total,
+                },
             )
 
+        answers = [
+            get_submitted_answer(response)
+            for response in ctx.get_responses(self.prompts)
+        ]
+        missing = sum(answer is None for answer in answers)
         transcripts = [
-            f"[User request]\n{prompt.user}\n\n[Response]\n{response}"
-            for prompt, response in zip(self.prompts, ctx.get_responses(self.prompts))
+            f"[User request]\n{prompt.user}\n\n[Response]\n{answer or ''}"
+            for prompt, answer in zip(self.prompts, answers)
         ]
         values = self._judge(
             [self.settings.response_prompt] * total,
@@ -274,8 +349,9 @@ class LLMJudge(Scorer):
 
         return Score(
             value=value,
-            rich_display=f"[bold]{value:.4f}[/]",
-            md_display=f"{value:.4f}",
+            rich_display=f"[bold]{value:.4f}[/], [bold]{missing}[/]/{total} without tool call",
+            md_display=f"{value:.4f}, {missing}/{total} without tool call",
+            components={"missing_tool_calls": missing / total},
         )
 
     def _judge(

@@ -4,6 +4,7 @@
 import importlib
 import importlib.util
 import inspect
+import json
 import sys
 import types
 from pathlib import Path
@@ -163,11 +164,11 @@ class Context:
         self._model = model
         self._settings = settings
         self._judge = judge
-        self._responses_cache: dict[tuple[tuple[str, str], ...], list[str]] = {}
-        self._rollouts_cache: dict[tuple[tuple[str, str], ...], list[Rollout]] = {}
+        self._responses_cache: dict[tuple[tuple[str, str, str], ...], list[str]] = {}
+        self._rollouts_cache: dict[tuple[tuple[str, str, str], ...], list[Rollout]] = {}
 
-    def _cache_key(self, prompts: list[Prompt]) -> tuple[tuple[str, str], ...]:
-        return tuple((p.system, p.user) for p in prompts)
+    def _cache_key(self, prompts: list[Prompt]) -> tuple[tuple[str, str, str], ...]:
+        return tuple((p.system, p.user, json.dumps(p.tools)) for p in prompts)
 
     def get_responses(self, prompts: list[Prompt]) -> list[str]:
         """Get model responses (cached within this context)."""

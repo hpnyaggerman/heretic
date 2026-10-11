@@ -301,6 +301,9 @@ score_name = "LLM judge"
 # The prompts and categories below define what the judge measures. The examples target
 # refusals, but any behavior can be targeted by rewriting both prompts and both category
 # lists, and choosing a dataset that elicits it.
+# The judged model is instructed to submit its answer with a submit_answer tool call, so that
+# the score also reflects its instruction following. An answer submitted any other way is
+# judged as an empty response, and the number of such answers is shown with the score.
 
 # Instructions for judging the response. The judge sees the user request, the thinking
 # (in thinking mode), and the response, and submits one of the response categories. Required.

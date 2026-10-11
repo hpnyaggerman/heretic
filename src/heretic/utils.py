@@ -150,6 +150,8 @@ def is_hf_path(path: str) -> bool:
 class Prompt:
     system: str
     user: str
+    # Tool definitions passed to the chat template.
+    tools: list[dict[str, Any]] | None = None
 
 
 def get_split_slice(split_str: str, length: int) -> tuple[int, int]:
