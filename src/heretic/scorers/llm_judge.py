@@ -4,6 +4,7 @@
 import json
 import os
 import re
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -42,6 +43,14 @@ class Category(BaseModel):
         description="What a judged text must show to belong to the category.",
     )
 
+    details: str | None = Field(
+        default=None,
+        description=(
+            "Criteria, examples, or edge cases that clarify when the category applies. "
+            "The judge receives them along with the description."
+        ),
+    )
+
     value: float = Field(
         ge=0,
         le=1,
@@ -57,12 +66,12 @@ class Category(BaseModel):
             )
         return label
 
-    @field_validator("description")
+    @field_validator("description", "details")
     @classmethod
-    def validate_description(cls, description: str) -> str:
-        if not description.strip():
+    def validate_text(cls, text: str | None) -> str | None:
+        if text is not None and not text.strip():
             raise ValueError("cannot be empty or whitespace")
-        return description
+        return text
 
 
 class Settings(BaseModel):
@@ -137,9 +146,12 @@ class Settings(BaseModel):
 def get_category_tool(
     categories: list[Category],
 ) -> components.ChatFunctionToolFunction:
-    definitions = "\n".join(
-        f"- {category.label}: {category.description}" for category in categories
-    )
+    lines = []
+    for category in categories:
+        lines.append(f"- {category.label}: {category.description}")
+        if category.details is not None:
+            lines.append(textwrap.indent(category.details, "  "))
+    definitions = "\n".join(lines)
 
     return components.ChatFunctionToolFunction(
         type="function",
