@@ -258,6 +258,7 @@ class LLMJudge(Scorer):
                 value=(thinking_value + response_value) / 2,
                 rich_display=f"[bold]{thinking_value:.4f}[/] thinking, [bold]{response_value:.4f}[/] response",
                 md_display=f"{thinking_value:.4f} thinking, {response_value:.4f} response",
+                components={"thinking": thinking_value, "response": response_value},
             )
 
         transcripts = [

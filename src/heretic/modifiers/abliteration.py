@@ -174,12 +174,12 @@ class Abliteration(Modifier[Parameters]):
         print("Calculating per-layer residual directions...")
 
         print("* Obtaining residual mean for good prompts...")
-        good_means = model.get_residuals_mean(
+        self.good_means = good_means = model.get_residuals_mean(
             good_prompts,
             winsorization_quantile=self.settings.winsorization_quantile,
         )
         print("* Obtaining residual mean for bad prompts...")
-        bad_means = model.get_residuals_mean(
+        self.bad_means = bad_means = model.get_residuals_mean(
             bad_prompts,
             winsorization_quantile=self.settings.winsorization_quantile,
         )
@@ -223,6 +223,13 @@ class Abliteration(Modifier[Parameters]):
         # LoRA B matrices are initialized to zero by default in PEFT,
         # so we don't need to do anything manually.
         model.apply_lora(self.lora_rank)
+
+    def get_priors(self) -> dict[str, Tensor]:
+        return {
+            "good_means": self.good_means,
+            "bad_means": self.bad_means,
+            "residual_directions": self.residual_directions,
+        }
 
     def suggest_parameters(self, ctx: Context, trial: Trial) -> Parameters:
         model = ctx.get_model()

@@ -8,6 +8,7 @@ from typing import Any, Generic, Protocol, TypeVar, get_args
 from optuna import Trial
 from optuna.trial import FrozenTrial
 from pydantic import BaseModel
+from torch import Tensor
 
 from .config import (
     ModifierConfig,
@@ -86,6 +87,13 @@ class Modifier(Plugin, ABC, Generic[Parameters]):
         Reset the model (obtainable via `ctx.get_model()`),
         undoing any changes made by `modify_model`.
         """
+
+    def get_priors(self) -> dict[str, Tensor]:
+        """
+        Tensors computed by `init` that the modifications are derived from
+        (such as refusal directions), recorded in the run log.
+        """
+        return {}
 
     def render_trial_parameters(self, trial: Trial | FrozenTrial) -> dict[str, str]:
         """

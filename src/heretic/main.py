@@ -53,6 +53,7 @@ import random
 import re
 import time
 import warnings
+from datetime import datetime, timezone
 from importlib.metadata import version
 from os.path import commonprefix
 from pathlib import Path
@@ -94,6 +95,7 @@ from .reproduce import (
     collect_reproducibles,
     load_reproduction_information,
 )
+from .run_log import append_trial_record, write_run_information
 from .system import empty_cache, get_accelerator_info
 from .utils import (
     ask_if_unset,
@@ -313,12 +315,12 @@ def run():
 
     os.makedirs(settings.study_checkpoint_dir, exist_ok=True)
 
+    model_slug = "".join(
+        [(c if (c.isalnum() or c in ["_", "-"]) else "--") for c in settings.model]
+    )
     study_checkpoint_file = os.path.join(
         settings.study_checkpoint_dir,
-        "".join(
-            [(c if (c.isalnum() or c in ["_", "-"]) else "--") for c in settings.model]
-        )
-        + ".jsonl",
+        model_slug + ".jsonl",
     )
 
     lock_obj = JournalFileOpenLock(study_checkpoint_file)
@@ -400,9 +402,12 @@ def run():
             return
 
         if action == "continue":
+            # Excluded from the stored settings, so it is carried over.
+            run_log_dir = settings.run_log_dir
             settings = Settings.model_validate_json(
                 existing_study.user_attrs["settings"]
             )
+            settings.run_log_dir = run_log_dir
         elif action == "restart":
             os.unlink(study_checkpoint_file)
             backend = JournalFileBackend(study_checkpoint_file, lock_obj=lock_obj)
@@ -646,6 +651,17 @@ def run():
     # This should free up memory from temporary objects created while initializing modifiers.
     empty_cache()
 
+    run_log_directory = None
+    if settings.run_log_dir is not None and not reproduction_mode:
+        run_log_directory = os.path.join(
+            settings.run_log_dir,
+            f"{model_slug}-{datetime.now(timezone.utc):%Y%m%d-%H%M%S}",
+        )
+        write_run_information(
+            run_log_directory, settings, model, modifier_entry, evaluator
+        )
+        print(f"* Logging the run to [bold]{run_log_directory}[/]")
+
     trial_index = 0
     start_index = 0
     start_time = time.perf_counter()
@@ -654,6 +670,7 @@ def run():
         nonlocal trial_index
         trial_index += 1
         trial.set_user_attr("index", trial_index)
+        trial_start_time = time.perf_counter()
 
         ctx = Context(settings=settings, model=model)
         parameters = modifier.suggest_parameters(ctx, trial)
@@ -686,10 +703,22 @@ def run():
             print(
                 f"[grey50]Estimated remaining time: [bold]{format_duration(remaining_time)}[/][/]"
             )
-        trial.set_user_attr(
-            "scores",
-            evaluator.get_paired_score_records(scores),
-        )
+        score_records = evaluator.get_paired_score_records(scores)
+        trial.set_user_attr("scores", score_records)
+        if run_log_directory is not None:
+            append_trial_record(
+                run_log_directory,
+                {
+                    "index": trial_index,
+                    "number": trial.number,
+                    "datetime_start": trial.datetime_start,
+                    "duration": time.perf_counter() - trial_start_time,
+                    "params": trial.params,
+                    "parameters": parameters.to_dict(),
+                    "scores": score_records,
+                    "objective_values": objective_values,
+                },
+            )
         print_memory_usage()
         if evaluator.judge is not None:
             print(evaluator.judge.usage())

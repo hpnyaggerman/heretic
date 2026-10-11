@@ -516,6 +516,15 @@ class Settings(BaseSettings):
         exclude=True,
     )
 
+    run_log_dir: str | None = Field(
+        default=None,
+        description=(
+            "Directory to write a log of each optimization run to, for analysis after the run. "
+            "Disabled if unset."
+        ),
+        exclude=True,
+    )
+
     benchmarks: list[BenchmarkSpecification] = Field(
         default=[
             BenchmarkSpecification(

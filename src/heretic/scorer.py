@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from pydantic import BaseModel
 
@@ -18,11 +18,13 @@ class Score:
     - `value`: scalar value used for optimization (if enabled).
     - `rich_display`: formatted Rich markup shown to the user in logs/console.
     - `md_display`: formatted value in the HF model card.
+    - `components`: named values that `value` is computed from, if any.
     """
 
     value: float
     rich_display: str
     md_display: str
+    components: dict[str, float] = field(default_factory=dict)
 
 
 class Scorer(Plugin, ABC):

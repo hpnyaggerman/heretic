@@ -616,22 +616,12 @@ def generate_reproduce_json(
 ) -> str:
     """Generates the contents of a reproduce.json file for the reproduce/ folder."""
 
-    version_info = get_heretic_version_info()
-
     data = {
         # Version 4: plugin-based schema with generic parameters and scores.
         "version": "4",
         "timestamp": timestamp,
         "system": None,  # Defined here to preserve insertion order.
-        "environment": {
-            "heretic": {
-                "version": version_info.version,
-                "is_standard_pypi": version_info.is_standard_pypi,
-                "metadata": version_info.metadata,
-            },
-            "pytorch_version": torch.__version__,
-            "requirements": get_requirements_dict(),
-        },
+        "environment": get_environment_dict(),
         "settings": settings.model_dump(),
         "parameters": trial.user_attrs["parameters"],
         "scores": trial.user_attrs["scores"],
@@ -639,19 +629,37 @@ def generate_reproduce_json(
     }
 
     if include_system_information:
-        data["system"] = {
-            "python": get_python_env_info_dict(),
-            "os": {
-                "platform": platform.platform(),
-                "machine": platform.machine(),
-            },
-            "cpu": get_cpu_info_dict(),
-            "accelerators": get_accelerator_info_dict(),
-        }
+        data["system"] = get_system_dict()
     else:
         del data["system"]
 
     return json.dumps(data, indent=4)
+
+
+def get_environment_dict() -> dict[str, Any]:
+    version_info = get_heretic_version_info()
+
+    return {
+        "heretic": {
+            "version": version_info.version,
+            "is_standard_pypi": version_info.is_standard_pypi,
+            "metadata": version_info.metadata,
+        },
+        "pytorch_version": torch.__version__,
+        "requirements": get_requirements_dict(),
+    }
+
+
+def get_system_dict() -> dict[str, Any]:
+    return {
+        "python": get_python_env_info_dict(),
+        "os": {
+            "platform": platform.platform(),
+            "machine": platform.machine(),
+        },
+        "cpu": get_cpu_info_dict(),
+        "accelerators": get_accelerator_info_dict(),
+    }
 
 
 def generate_sha256sums(hashes: dict[str, str]) -> str:
