@@ -26,6 +26,23 @@ thinking_judge = "openrouter"
 # OpenRouter model ID of that judge. Required.
 # openrouter_model = "<provider>/<model>"
 
+# OpenRouter providers that serve that judge's requests, in order of preference and with no
+# fallback to others. If not set, OpenRouter chooses the provider.
+# openrouter_provider = ["<provider>"]
+
+# What that judge counts as degenerate. It opens the judge's user message, followed by the
+# question "Is the model output degenerate?", the request, and the output so far.
+judge_criteria = "Degenerate output is repetitive, stuck in a loop, incoherent, in a different language than the request, or drifting away from the request."
+
+# That judge's system prompt.
+openrouter_system_prompt = '''
+You review the output of a language model while it is still being generated, to catch output that has degenerated before more of it is generated.
+
+The user message starts with the criteria for degenerate output and the question you answer. Then [User request] is the request the model is answering, and [Model output so far] is everything the model has generated so far in its current part: either its thinking or, once it has finished thinking, its answer, which may be written as a tool call. The output is reviewed again each time it has grown by a fixed number of tokens, so it usually breaks off mid-sentence; that alone does not make it degenerate.
+
+Answer with a JSON object whose only field, degenerate, is true if the output so far is degenerate and false if it is not.
+'''
+
 scorers = [
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "story" },
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "refusal" },
@@ -38,6 +55,11 @@ scorers = [
 # OpenRouter model ID of the judges, which must support tool calling and should reason before
 # answering. Required; an instance section can set its own.
 # model = "<provider>/<model>"
+
+# OpenRouter providers that serve the judges' requests, in order of preference and with no
+# fallback to others. If not set, OpenRouter chooses the provider. An instance section can set
+# its own.
+# provider = ["<provider>"]
 
 [scorer.LLMJudge_story]
 score_name = "Consensus conformity"
