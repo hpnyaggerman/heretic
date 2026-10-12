@@ -29,6 +29,23 @@ SHIELDSTRAL_MODEL = "mistralai/Shieldstral-1.0-3B"
 QUESTION = "Is the model output degenerate?"
 
 
+def get_provider_preferences(
+    providers: list[str] | None,
+) -> components.ProviderPreferences:
+    """
+    Routes OpenRouter requests to the given providers, in order and with no fallback
+    to others, or to any provider if none are given. Either way, a provider must
+    support every parameter the request uses.
+    """
+    if providers is None:
+        return components.ProviderPreferences(require_parameters=True)
+    return components.ProviderPreferences(
+        order=providers,
+        allow_fallbacks=False,
+        require_parameters=True,
+    )
+
+
 class Judge(ABC):
     calls = 0
     cost = 0.0
@@ -172,9 +189,15 @@ class OpenRouterJudge(Judge):
         )
 
     def _send(self, request: str, text: str) -> components.ChatResult:
+        system_prompt = self.settings.openrouter_system_prompt
         return self.client.chat.send(
             model=self.settings.openrouter_model,
             messages=[
+                *(
+                    []
+                    if system_prompt is None
+                    else [{"role": "system", "content": system_prompt}]
+                ),
                 {
                     "role": "user",
                     "content": (
@@ -182,10 +205,10 @@ class OpenRouterJudge(Judge):
                         f"[User request]\n{request}\n\n"
                         f"[Model output so far]\n{text}"
                     ),
-                }
+                },
             ],
             response_format=self.VERDICT,
-            provider=components.ProviderPreferences(require_parameters=True),
+            provider=get_provider_preferences(self.settings.openrouter_provider),
             reasoning=self.reasoning,
             temperature=self.temperature,
             stream=False,

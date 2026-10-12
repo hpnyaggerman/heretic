@@ -112,6 +112,14 @@ judge_first_chunk_only = false
 # OpenRouter model ID used when thinking_judge is "openrouter". Required in that case.
 # openrouter_model = "<provider>/<model>"
 
+# OpenRouter providers that serve the requests when thinking_judge is "openrouter", in order
+# of preference and with no fallback to others. If not set, OpenRouter chooses the provider.
+# openrouter_provider = ["<provider>"]
+
+# System prompt of the judge when thinking_judge is "openrouter". If not set, the judge gets no
+# system prompt, only the user message with judge_criteria, the question, and the output to judge.
+# openrouter_system_prompt = "..."
+
 # Hugging Face commit hash of the Shieldstral judge model. If not set, it is fetched
 # from the Hub when the judge is loaded, which requires internet access.
 # judge_model_commit = "<commit hash>"
@@ -300,6 +308,10 @@ score_name = "LLM judge"
 # OpenRouter model ID of the judge, called using the OPENROUTER_API_KEY environment variable.
 # The model must support tool calling. Required.
 # model = "<provider>/<model>"
+
+# OpenRouter providers that serve the judge's requests, in order of preference and with no
+# fallback to others. If not set, OpenRouter chooses the provider.
+# provider = ["<provider>"]
 
 # The prompts and categories below define what the judge measures. The examples target
 # refusals, but any behavior can be targeted by rewriting both prompts and both category

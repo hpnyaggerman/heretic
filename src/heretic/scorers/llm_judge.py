@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.markup import escape
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
+from heretic.judge import get_provider_preferences
 from heretic.scorer import Context, Score, Scorer
 from heretic.utils import Prompt, format_dataset_specification, print
 
@@ -126,6 +127,15 @@ class Settings(BaseModel):
 
     model: str = Field(
         description="OpenRouter model ID of the judge. The model must support tool calling.",
+    )
+
+    provider: list[str] | None = Field(
+        default=None,
+        description=(
+            "OpenRouter providers that serve the judge's requests, in order of preference and "
+            'with no fallback to others (e.g. ["deepinfra"]). If not set, OpenRouter chooses '
+            "the provider."
+        ),
     )
 
     response_prompt: str = Field(
@@ -444,7 +454,7 @@ class LLMJudge(Scorer):
                 },
             ],
             tools=[get_category_tool(categories)],
-            provider=components.ProviderPreferences(require_parameters=True),
+            provider=get_provider_preferences(self.settings.provider),
             temperature=self.temperature,
             stream=False,
         )

@@ -446,6 +446,24 @@ class Settings(BaseSettings):
         description='OpenRouter model ID used when thinking_judge is "openrouter". Required in that case.',
     )
 
+    openrouter_provider: list[str] | None = Field(
+        default=None,
+        description=(
+            'OpenRouter providers that serve the requests when thinking_judge is "openrouter", '
+            'in order of preference and with no fallback to others (e.g. ["deepinfra"]). '
+            "If not set, OpenRouter chooses the provider."
+        ),
+    )
+
+    openrouter_system_prompt: str | None = Field(
+        default=None,
+        description=(
+            'System prompt of the judge when thinking_judge is "openrouter". If not set, the judge '
+            "gets no system prompt, only the user message with judge_criteria, the question, "
+            "and the output to judge."
+        ),
+    )
+
     judge_model_commit: str | None = Field(
         default=None,
         description=(
