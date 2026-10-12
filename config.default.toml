@@ -313,6 +313,11 @@ score_name = "LLM judge"
 # and the response, and submits one of the thinking categories. Required in thinking mode.
 # thinking_prompt = "Judge how the thinking approaches the user request."
 
+# Either prompt can instead be read from a file, which suits long instructions. A relative
+# path is relative to the working directory. Both settings may name the same file.
+# response_prompt_file = "judge.md"
+# thinking_prompt_file = "judge.md"
+
 # Categories the judge chooses from when judging the response. Each category has a label
 # (which the judge submits), a description (what the judged text must show to belong to it),
 # optional details (criteria, examples, or edge cases that clarify when it applies, sent to

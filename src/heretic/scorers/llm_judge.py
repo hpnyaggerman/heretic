@@ -7,11 +7,13 @@ import re
 import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
 
 import httpx
 from openrouter import OpenRouter, components
 from openrouter.types import UNSET
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.markup import escape
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
@@ -152,6 +154,22 @@ class Settings(BaseModel):
         description="Categories the judge chooses from when judging the thinking. Required in thinking mode.",
     )
 
+    response_prompt_file: str | None = Field(
+        default=None,
+        description=(
+            "File to read response_prompt from, instead of setting it directly. "
+            "A relative path is relative to the working directory."
+        ),
+    )
+
+    thinking_prompt_file: str | None = Field(
+        default=None,
+        description=(
+            "File to read thinking_prompt from, instead of setting it directly. "
+            "A relative path is relative to the working directory."
+        ),
+    )
+
     prompts: DatasetSpecification = Field(
         default=SingleDatasetSpecification(
             dataset="mlabonne/harmful_behaviors",
@@ -163,6 +181,22 @@ class Settings(BaseModel):
             "suits measuring refusals; for another target, use prompts that elicit it."
         ),
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def read_prompt_files(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        for name in ("response_prompt", "thinking_prompt"):
+            path = data.get(f"{name}_file")
+            if path is None:
+                continue
+            if data.get(name) is not None:
+                raise ValueError(f"{name} and {name}_file cannot both be set")
+            data = {**data, name: Path(path).read_text(encoding="utf-8")}
+
+        return data
 
     @field_validator("response_categories", "thinking_categories")
     @classmethod
