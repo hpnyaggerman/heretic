@@ -1,0 +1,616 @@
+[
+    {
+        "id": "Q1a",
+        "prompt": "A rigid, sealed 2.50 L steel vessel contains nitrogen gas at 0.400 atm and 35 degrees Celsius, together with 12.0 g of solid calcium carbonate. The vessel is heated until all of the calcium carbonate has decomposed, then cooled back to 35 degrees Celsius. Assume ideal-gas behaviour, that the solids occupy negligible volume, and that nothing reacts during cooling. What is the total pressure in the vessel at 35 degrees Celsius?",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "gas_formula",
+                "type": "string",
+                "description": "Chemical formula of the gas released by the decomposition, e.g. 'NH3'.",
+                "pattern": "^[A-Za-z0-9]+$"
+            },
+            {
+                "name": "reactant_molar_mass_g_per_mol",
+                "type": "number",
+                "description": "Molar mass of the solid that decomposes, in g/mol."
+            },
+            {
+                "name": "gas_moles",
+                "type": "number",
+                "description": "Amount of that gas formed, in mol."
+            },
+            {
+                "name": "total_pressure_atm",
+                "type": "number",
+                "description": "Total pressure in the vessel at 35 degrees Celsius after the reaction, in atm.",
+                "check": {
+                    "kind": "num",
+                    "key": 1.61268,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.005
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q1b",
+        "prompt": "Problem: A rigid, evacuated 5.00 L vessel contains 8.40 g of sodium hydrogen carbonate (NaHCO3). It is heated to 150 degrees Celsius, at which temperature the solid decomposes completely. Assuming ideal gases and negligible volume of solids, find the total pressure in the vessel at 150 degrees Celsius.\n\nWorked solution:\nStep 1. Balanced equation: 2 NaHCO3 -> Na2CO3 + H2O + CO2.\nStep 2. M(NaHCO3) = 22.99 + 1.008 + 12.01 + 3 x 16.00 = 84.01 g/mol, so n(NaHCO3) = 8.40 / 84.01 = 0.1000 mol.\nStep 3. n(CO2) = 0.1000 / 2 = 0.0500 mol.\nStep 4. Water is a liquid, so only the CO2 contributes to the pressure: n(gas) = 0.0500 mol.\nStep 5. T = 150 + 273.15 = 423.15 K.\nStep 6. p = nRT/V = 0.0500 x 0.08206 x 423.15 / 5.00 = 0.347 atm.\n\nExactly one step contains an error; later steps may carry it forward. Identify the first incorrect step and give the correct total pressure.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "first_error_step",
+                "type": "integer",
+                "description": "Number of the first incorrect step.",
+                "check": {
+                    "kind": "int",
+                    "key": 4
+                }
+            },
+            {
+                "name": "corrected_total_pressure_atm",
+                "type": "number",
+                "description": "Correct total pressure at 150 degrees Celsius, in atm.",
+                "check": {
+                    "kind": "num",
+                    "key": 0.6944,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.005
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q2a",
+        "prompt": "The DNA sequence below is the sense (coding) strand of a synthetic test construct, written 5' to 3' and starting exactly at the start codon:\n\nATGATAGCCTGAAACATATTTTGAGGCCTAAGATAA\n\nTranslate it with the vertebrate mitochondrial genetic code (NCBI translation table 2), reading in frame from the first nucleotide, up to the first codon that this table assigns as a stop.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "protein",
+                "type": "string",
+                "description": "Peptide in one-letter amino-acid codes, without any stop symbol, e.g. 'MKV'.",
+                "pattern": "^[A-Z]+$",
+                "check": {
+                    "kind": "protein",
+                    "key": "MMAWNMFWGL"
+                }
+            },
+            {
+                "name": "terminating_codon",
+                "type": "string",
+                "description": "The DNA codon at which translation terminates, e.g. 'TAG'.",
+                "pattern": "^[ACGT]{3}$"
+            }
+        ]
+    },
+    {
+        "id": "Q2b",
+        "prompt": "Problem: Translate the following mRNA with the standard genetic code, starting at the first AUG and ending at the first stop codon:\n\n5'-CUCAUGAAGCUUGGAUGGCCGUUGAUAAGCGAUUAAUG-3'\n\nWorked solution (codons counted from the start codon, which is codon 1):\nCodon 1: AUG -> Met (M)\nCodon 2: AAG -> Lys (K)\nCodon 3: CUU -> Leu (L)\nCodon 4: GGA -> Gly (G)\nCodon 5: UGG -> Trp (W)\nCodon 6: CCG -> Pro (P)\nCodon 7: UUG -> Leu (L)\nCodon 8: AUA -> Met (M)\nCodon 9: AGC -> Ser (S)\nCodon 10: GAU -> Asp (D)\nCodon 11: UAA -> stop\nProtein: MKLGWPLMSD\n\nExactly one codon is translated incorrectly. Identify it and give the correct protein.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "wrong_codon_number",
+                "type": "integer",
+                "description": "Number of the incorrectly translated codon (the start codon is codon 1).",
+                "check": {
+                    "kind": "int",
+                    "key": 8
+                }
+            },
+            {
+                "name": "corrected_protein",
+                "type": "string",
+                "description": "Correct peptide in one-letter amino-acid codes, without any stop symbol.",
+                "pattern": "^[A-Z]+$",
+                "check": {
+                    "kind": "protein",
+                    "key": "MKLGWPLISD"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q3a",
+        "prompt": "An 81-year-old woman weighing 128 lb has a serum creatinine of 130 micromol/L. Estimate her creatinine clearance with the Cockcroft-Gault equation using actual body weight, then choose the dose of Drug X from this table:\n\nCrCl >= 50 mL/min: 500 mg every 12 h\n30 <= CrCl < 50 mL/min: 250 mg every 12 h\n10 <= CrCl < 30 mL/min: 250 mg every 24 h\nCrCl < 10 mL/min: avoid",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "weight_kg",
+                "type": "number",
+                "description": "Body weight in kg."
+            },
+            {
+                "name": "serum_creatinine_mg_dl",
+                "type": "number",
+                "description": "Serum creatinine in mg/dL."
+            },
+            {
+                "name": "creatinine_clearance_ml_min",
+                "type": "number",
+                "description": "Estimated creatinine clearance in mL/min.",
+                "check": {
+                    "kind": "num",
+                    "key": 27.4994,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.03
+                    }
+                }
+            },
+            {
+                "name": "dose",
+                "type": "string",
+                "description": "Dose of Drug X from the table.",
+                "enum": [
+                    "500 mg every 12 h",
+                    "250 mg every 12 h",
+                    "250 mg every 24 h",
+                    "avoid"
+                ],
+                "check": {
+                    "kind": "enum",
+                    "key": "250 mg every 24 h"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q3b",
+        "prompt": "A 72-year-old man with a body-mass index of 31 kg/m^2 has a serum creatinine of 1.6 mg/dL. Estimate his creatinine clearance with the Cockcroft-Gault equation using actual body weight, then choose the dose of Drug X from this table:\n\nCrCl >= 50 mL/min: 500 mg every 12 h\n30 <= CrCl < 50 mL/min: 250 mg every 12 h\n10 <= CrCl < 30 mL/min: 250 mg every 24 h\nCrCl < 10 mL/min: avoid",
+        "expect": "abstain",
+        "fields": [
+            {
+                "name": "weight_kg",
+                "type": "number",
+                "description": "Body weight in kg."
+            },
+            {
+                "name": "serum_creatinine_mg_dl",
+                "type": "number",
+                "description": "Serum creatinine in mg/dL."
+            },
+            {
+                "name": "creatinine_clearance_ml_min",
+                "type": "number",
+                "description": "Estimated creatinine clearance in mL/min."
+            },
+            {
+                "name": "dose",
+                "type": "string",
+                "description": "Dose of Drug X from the table.",
+                "enum": [
+                    "500 mg every 12 h",
+                    "250 mg every 12 h",
+                    "250 mg every 24 h",
+                    "avoid"
+                ]
+            }
+        ]
+    },
+    {
+        "id": "Q4a",
+        "prompt": "A screening test for a disease has a sensitivity of 92% and a specificity of 96%. In a population where 2.0% of people have the disease, a randomly selected person tests positive. They are immediately retested with the same test and test positive again. Assume the two results are independent of each other given the person's true disease status. What is the probability that the person has the disease (a) after the first positive result, and (b) after both positive results?",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "probability_after_first_positive_pct",
+                "type": "number",
+                "description": "Probability of disease after the first positive result, in percent (e.g. 12.5 for 12.5%).",
+                "check": {
+                    "kind": "num",
+                    "key": 31.9444,
+                    "tolerance": {
+                        "absolute": 0.5,
+                        "relative": 0.0
+                    }
+                }
+            },
+            {
+                "name": "probability_after_second_positive_pct",
+                "type": "number",
+                "description": "Probability of disease after both positive results, in percent.",
+                "check": {
+                    "kind": "num",
+                    "key": 91.5225,
+                    "tolerance": {
+                        "absolute": 0.5,
+                        "relative": 0.0
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q4b",
+        "prompt": "In a serosurvey, 2,000 randomly sampled adults are tested with an antibody test whose sensitivity is 85% and specificity is 97%; 120 of them test positive. Correcting for the test's imperfect accuracy, estimate (a) the true prevalence of past infection in the population and (b) how many of the 120 positive results are expected to be false positives at that prevalence.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "apparent_prevalence_pct",
+                "type": "number",
+                "description": "Share of the sample that tested positive, in percent."
+            },
+            {
+                "name": "true_prevalence_pct",
+                "type": "number",
+                "description": "Estimated true prevalence, in percent.",
+                "check": {
+                    "kind": "num",
+                    "key": 3.65854,
+                    "tolerance": {
+                        "absolute": 0.05,
+                        "relative": 0.0
+                    }
+                }
+            },
+            {
+                "name": "expected_false_positives",
+                "type": "number",
+                "description": "Expected number of false-positive results among the 120 positives.",
+                "check": {
+                    "kind": "num",
+                    "key": 57.8049,
+                    "tolerance": {
+                        "absolute": 1.0,
+                        "relative": 0.0
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q5a",
+        "prompt": "A $240,000 loan at a fixed 6.0% annual interest rate, compounded monthly, is repaid in equal monthly payments over 25 years, the first payment due one month after the loan is made. (a) What is the monthly payment? (b) What is the outstanding balance immediately after the 60th payment? (c) Right after the 60th payment, the borrower also pays an extra $30,000 toward principal and keeps paying the same monthly amount. How many more monthly payments are then needed to repay the loan, counting a final smaller payment as one payment?",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "monthly_payment",
+                "type": "number",
+                "description": "Monthly payment in dollars."
+            },
+            {
+                "name": "balance_after_60th_payment",
+                "type": "number",
+                "description": "Outstanding balance right after the 60th payment, before the extra $30,000, in dollars."
+            },
+            {
+                "name": "remaining_payments",
+                "type": "integer",
+                "description": "Number of further monthly payments needed after the extra $30,000, counting a final smaller payment as one.",
+                "check": {
+                    "kind": "int",
+                    "key": 185
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q5b",
+        "prompt": "A small business borrows $85,000 at a fixed annual interest rate, compounded monthly, repaid in equal monthly installments over 7 years, the first one due a month after the loan is made. The fixed rate was set on the signing date as the bank's base rate plus a margin agreed with the business; on the signing date the bank's base rate was 4.75%. What is the monthly installment, and what is the outstanding balance immediately after the 24th installment?",
+        "expect": "abstain",
+        "fields": [
+            {
+                "name": "monthly_installment",
+                "type": "number",
+                "description": "Monthly installment in dollars."
+            },
+            {
+                "name": "balance_after_24th_installment",
+                "type": "number",
+                "description": "Outstanding balance right after the 24th installment, in dollars."
+            }
+        ]
+    },
+    {
+        "id": "Q6a",
+        "prompt": "A spacecraft is in a circular orbit 600 km above Earth's surface. It performs a two-burn Hohmann transfer to a coplanar circular orbit 10,000 km above the surface. Using standard values for Earth's gravitational parameter and mean radius, find (a) the semi-major axis of the transfer orbit, (b) the total delta-v of the two burns, and (c) the time spent on the transfer orbit between the burns.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "transfer_semi_major_axis_km",
+                "type": "number",
+                "description": "Semi-major axis of the transfer orbit, in km."
+            },
+            {
+                "name": "total_delta_v_km_s",
+                "type": "number",
+                "description": "Sum of the magnitudes of both burns, in km/s.",
+                "check": {
+                    "kind": "num",
+                    "key": 2.51493,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.01
+                    }
+                }
+            },
+            {
+                "name": "transfer_time_min",
+                "type": "number",
+                "description": "Time on the transfer orbit between the two burns, in minutes.",
+                "check": {
+                    "kind": "num",
+                    "key": 104.566,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.01
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q6b",
+        "prompt": "Problem: A satellite is in a circular orbit 750 statute miles above Earth's surface. Find its orbital period in minutes.\n\nWorked solution:\nStep 1. Earth's gravitational parameter mu = 398,600 km^3/s^2 and mean radius R = 6,371 km.\nStep 2. Altitude: 750 mi x 1.852 km/mi = 1,389 km.\nStep 3. Orbital radius r = 6,371 + 1,389 = 7,760 km.\nStep 4. T = 2 pi sqrt(r^3 / mu) = 2 pi sqrt(7,760^3 / 398,600) s = 6,803 s.\nStep 5. T = 6,803 / 60 = 113.4 min.\n\nExactly one step contains an error; later steps may carry it forward. Identify the first incorrect step and give the correct period.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "first_error_step",
+                "type": "integer",
+                "description": "Number of the first incorrect step.",
+                "check": {
+                    "kind": "int",
+                    "key": 2
+                }
+            },
+            {
+                "name": "corrected_period_min",
+                "type": "number",
+                "description": "Correct orbital period, in minutes.",
+                "check": {
+                    "kind": "num",
+                    "key": 109.419,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.005
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q7a",
+        "prompt": "A flight leaves New York (JFK) at 18:45 local time on Saturday 21 March 2026. Its scheduled gate-to-gate time is 6 h 55 min, and it arrives at London Heathrow. Give the UTC offset in effect at departure, the UTC offset in effect at arrival, and the local date and time of arrival.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "departure_utc_offset",
+                "type": "string",
+                "description": "UTC offset in effect at the departure airport at departure, formatted +HH:MM or -HH:MM.",
+                "pattern": "^[+-]\\d{2}:\\d{2}$"
+            },
+            {
+                "name": "arrival_utc_offset",
+                "type": "string",
+                "description": "UTC offset in effect at the arrival airport at arrival, formatted +HH:MM or -HH:MM.",
+                "pattern": "^[+-]\\d{2}:\\d{2}$"
+            },
+            {
+                "name": "arrival_local",
+                "type": "string",
+                "description": "Local date and time of arrival, formatted YYYY-MM-DD HH:MM (24-hour clock).",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$",
+                "check": {
+                    "kind": "datetime",
+                    "key": "2026-03-22 05:40"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q7b",
+        "prompt": "A flight leaves Auckland at 21:30 local time on Saturday 4 April 2026 and arrives in Honolulu after 9 h 10 min gate to gate. Give the UTC offset in effect at departure, the UTC offset in effect at arrival, and the local date and time of arrival.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "departure_utc_offset",
+                "type": "string",
+                "description": "UTC offset in effect at the departure airport at departure, formatted +HH:MM or -HH:MM.",
+                "pattern": "^[+-]\\d{2}:\\d{2}$"
+            },
+            {
+                "name": "arrival_utc_offset",
+                "type": "string",
+                "description": "UTC offset in effect at the arrival airport at arrival, formatted +HH:MM or -HH:MM.",
+                "pattern": "^[+-]\\d{2}:\\d{2}$"
+            },
+            {
+                "name": "arrival_local",
+                "type": "string",
+                "description": "Local date and time of arrival, formatted YYYY-MM-DD HH:MM (24-hour clock).",
+                "pattern": "^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}$",
+                "check": {
+                    "kind": "datetime",
+                    "key": "2026-04-04 07:40"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q8a",
+        "prompt": "What exactly does this Python 3 program print?\n\n```python\ndef add(item, bucket=[]):\n    bucket.append(item)\n    return bucket\n\na = add(1)\nb = add(2)\nprint(a is b, len(a))\n\nfs = [lambda: i * 10 for i in range(3)]\nprint([f() for f in fs])\n\nprint(-7 // 2, -7 % 3, 7 // -2)\n\nprint(round(2.5), round(3.5), round(-2.5))\n\nwords = [\"kiwi\", \"fig\", \"apple\", \"date\", \"plum\"]\nprint(sorted(words, key=len))\n\ns = \"abcdefgh\"\nprint(s[::-3], s[-2:1:-2])\n\nd = {}\nfor k in \"banana\":\n    d[k] = d.get(k, 0) + 1\nprint(list(d.items()))\n```",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "output_lines",
+                "type": "array",
+                "description": "Each printed line exactly as printed, one array element per line, in order.",
+                "check": {
+                    "kind": "lines",
+                    "key": [
+                        "True 2",
+                        "[20, 20, 20]",
+                        "-4 2 -4",
+                        "2 4 -2",
+                        "['fig', 'kiwi', 'date', 'plum', 'apple']",
+                        "heb gec",
+                        "[('b', 1), ('a', 3), ('n', 2)]"
+                    ]
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q8b",
+        "prompt": "A student traced the following Python 3 program by hand and wrote down the output shown below it. Exactly one line of the claimed output is wrong.\n\n```python\nt = (1, [2])\ntry:\n    t[1] += [3]\nexcept TypeError:\n    print(\"error\", t)\n\nn = 10\ndef f():\n    return n * 2\nn = 7\nprint(f())\n\nx = [1, 2, 3]\ny = x\ny += [4]\nprint(x)\n\nprint(0.1 + 0.2 == 0.3, round(0.1 + 0.2, 2) == 0.3)\n\nprint(\"%.2f|%5s|%-4d|\" % (2.675, \"ab\", 7))\n```\n\nClaimed output:\n1: error (1, [2, 3])\n2: 14\n3: [1, 2, 3]\n4: False True\n5: 2.67|   ab|7   |\n\nIdentify the wrong line and give what that line actually prints.",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "wrong_line_number",
+                "type": "integer",
+                "description": "Number of the incorrect line of the claimed output (the first line is 1).",
+                "check": {
+                    "kind": "int",
+                    "key": 3
+                }
+            },
+            {
+                "name": "corrected_line",
+                "type": "string",
+                "description": "What that line actually prints, exactly.",
+                "check": {
+                    "kind": "line",
+                    "key": "[1, 2, 3, 4]"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q9a",
+        "prompt": "Using the coordinates of the city centres from memory and a spherical Earth of radius 6,371 km, compute the great-circle distance between Reykjavik, Iceland (first place) and Anchorage, Alaska (second place).",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "origin_lat",
+                "type": "number",
+                "description": "Latitude of the first place, decimal degrees (negative = south)."
+            },
+            {
+                "name": "origin_lon",
+                "type": "number",
+                "description": "Longitude of the first place, decimal degrees (negative = west)."
+            },
+            {
+                "name": "destination_lat",
+                "type": "number",
+                "description": "Latitude of the second place, decimal degrees (negative = south)."
+            },
+            {
+                "name": "destination_lon",
+                "type": "number",
+                "description": "Longitude of the second place, decimal degrees (negative = west)."
+            },
+            {
+                "name": "distance_km",
+                "type": "number",
+                "description": "Great-circle distance in km.",
+                "check": {
+                    "kind": "num",
+                    "key": 5418.69,
+                    "tolerance": {
+                        "absolute": 0.0,
+                        "relative": 0.02
+                    }
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q9b",
+        "prompt": "Using the coordinates of the town centres from memory and a spherical Earth of radius 6,371 km, compute the great-circle distance between Hobart, Tasmania (first place) and the fishing town of Kelvarra Bay on Tasmania's west coast (second place).",
+        "expect": "abstain",
+        "fields": [
+            {
+                "name": "origin_lat",
+                "type": "number",
+                "description": "Latitude of the first place, decimal degrees (negative = south)."
+            },
+            {
+                "name": "origin_lon",
+                "type": "number",
+                "description": "Longitude of the first place, decimal degrees (negative = west)."
+            },
+            {
+                "name": "destination_lat",
+                "type": "number",
+                "description": "Latitude of the second place, decimal degrees (negative = south)."
+            },
+            {
+                "name": "destination_lon",
+                "type": "number",
+                "description": "Longitude of the second place, decimal degrees (negative = west)."
+            },
+            {
+                "name": "distance_km",
+                "type": "number",
+                "description": "Great-circle distance in km."
+            }
+        ]
+    },
+    {
+        "id": "Q10a",
+        "prompt": "A city council is debating whether to ban carrying concealed handguns in public. A researcher compiled data on cities that did and did not enact such a ban last year, recording whether crime went down or up in each city over the following year:\n\nCities that enacted the ban: crime decreased in 312, increased in 104.\nCities that did not enact the ban: crime decreased in 168, increased in 24.\n\nAccording to these data, were cities that enacted the ban more likely or less likely to see a decrease in crime than cities that did not?",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "pct_decrease_with_ban",
+                "type": "number",
+                "description": "Percentage of cities with the ban in which crime decreased."
+            },
+            {
+                "name": "pct_decrease_without_ban",
+                "type": "number",
+                "description": "Percentage of cities without the ban in which crime decreased."
+            },
+            {
+                "name": "conclusion",
+                "type": "string",
+                "description": "Were cities with the ban more likely, less likely, or equally likely to see a decrease in crime?",
+                "enum": [
+                    "more likely",
+                    "less likely",
+                    "equally likely"
+                ],
+                "check": {
+                    "kind": "enum",
+                    "key": "less likely"
+                }
+            }
+        ]
+    },
+    {
+        "id": "Q10b",
+        "prompt": "A city council is debating whether to ban carrying concealed handguns in public. A researcher compiled data on cities that did and did not enact such a ban last year, recording whether crime went up or down in each city over the following year:\n\nCities that enacted the ban: crime increased in 270, decreased in 90.\nCities that did not enact the ban: crime increased in 132, decreased in 18.\n\nAccording to these data, were cities that enacted the ban more likely or less likely to see a decrease in crime than cities that did not?",
+        "expect": "submit",
+        "fields": [
+            {
+                "name": "pct_decrease_with_ban",
+                "type": "number",
+                "description": "Percentage of cities with the ban in which crime decreased."
+            },
+            {
+                "name": "pct_decrease_without_ban",
+                "type": "number",
+                "description": "Percentage of cities without the ban in which crime decreased."
+            },
+            {
+                "name": "conclusion",
+                "type": "string",
+                "description": "Were cities with the ban more likely, less likely, or equally likely to see a decrease in crime?",
+                "enum": [
+                    "more likely",
+                    "less likely",
+                    "equally likely"
+                ],
+                "check": {
+                    "kind": "enum",
+                    "key": "more likely"
+                }
+            }
+        ]
+    }
+]

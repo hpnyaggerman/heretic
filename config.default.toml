@@ -131,6 +131,9 @@ scorers = [
     # behavior its prompts and categories describe (in thinking mode, the mean of the
     # thinking and response values):
     # { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize" },
+    # This scorer reports the fraction of 20 applied-reasoning questions the model fails to
+    # answer correctly through a tool call:
+    # { plugin = "heretic.scorers.quality_canary.QualityCanary", optimization = "minimize" },
 ]
 
 # List of modifier plugin configs. Each entry is an object
@@ -398,6 +401,15 @@ score_name = "LLM judge"
 dataset = "mlabonne/harmful_behaviors"
 split = "test[:100]"
 column = "text"
+
+
+[scorer.QualityCanary]
+# Maximum number of tokens to generate for each answer, including any reasoning the model
+# writes before its tool call (in non-thinking mode, all of its reasoning).
+max_response_length = 8192
+
+# Maximum number of thinking tokens for each answer in thinking mode.
+max_thinking_length = 65536
 
 
 [modifier.ARA]

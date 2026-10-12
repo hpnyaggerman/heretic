@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+import dataclasses
 import importlib
 import importlib.util
 import inspect
@@ -164,11 +165,11 @@ class Context:
         self._model = model
         self._settings = settings
         self._judge = judge
-        self._responses_cache: dict[tuple[tuple[str, str, str], ...], list[str]] = {}
-        self._rollouts_cache: dict[tuple[tuple[str, str, str], ...], list[Rollout]] = {}
+        self._responses_cache: dict[tuple[str, ...], list[str]] = {}
+        self._rollouts_cache: dict[tuple[str, ...], list[Rollout]] = {}
 
-    def _cache_key(self, prompts: list[Prompt]) -> tuple[tuple[str, str, str], ...]:
-        return tuple((p.system, p.user, json.dumps(p.tools)) for p in prompts)
+    def _cache_key(self, prompts: list[Prompt]) -> tuple[str, ...]:
+        return tuple(json.dumps(dataclasses.asdict(p)) for p in prompts)
 
     def get_responses(self, prompts: list[Prompt]) -> list[str]:
         """Get model responses (cached within this context)."""

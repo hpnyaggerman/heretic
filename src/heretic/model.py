@@ -89,8 +89,10 @@ class _RolloutState:
 
     def remaining(self, settings: Settings) -> int:
         if self.closer_end is None:
-            return settings.max_thinking_length - len(self.generated)
-        return self.closer_end + settings.max_response_length - len(self.generated)
+            limit = self.prompt.max_thinking_length or settings.max_thinking_length
+            return limit - len(self.generated)
+        limit = self.prompt.max_response_length or settings.max_response_length
+        return self.closer_end + limit - len(self.generated)
 
 
 class Model:
@@ -728,7 +730,7 @@ class Model:
                     closed = True
 
             if state.closer_end is None:
-                if closed or len(state.generated) >= settings.max_thinking_length:
+                if closed or state.remaining(settings) <= 0:
                     closer = self._closer_for(closer_ids, state.prompt)
                     state.generated.extend(closer)
                     state.closer_length = len(closer)
@@ -804,7 +806,10 @@ class Model:
     ) -> list[str]:
         inputs, outputs = self.generate(
             prompts,
-            max_new_tokens=self.settings.max_response_length,
+            max_new_tokens=max(
+                prompt.max_response_length or self.settings.max_response_length
+                for prompt in prompts
+            ),
         )
 
         # Extract the newly generated part.

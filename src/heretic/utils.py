@@ -152,6 +152,9 @@ class Prompt:
     user: str
     # Tool definitions passed to the chat template.
     tools: list[dict[str, Any]] | None = None
+    # Override the global settings of the same names.
+    max_response_length: int | None = None
+    max_thinking_length: int | None = None
 
 
 def get_split_slice(split_str: str, length: int) -> tuple[int, int]:
