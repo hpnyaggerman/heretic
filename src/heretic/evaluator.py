@@ -47,8 +47,6 @@ class Evaluator:
         self.baseline_scores = self.get_baseline_scores()
         for name, score in self.baseline_scores:
             print(f"* Baseline [bold]{name}:[/] [green]{score.rich_display}[/]")
-        if self.judge is not None:
-            print(self.judge.usage())
 
     def _load_and_init_scorers(self) -> None:
         """
@@ -111,7 +109,7 @@ class Evaluator:
             )
 
         # Run scorer init hooks.
-        ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
+        ctx = Context(settings=self.settings, model=self.model)
 
         for entry in self._scorer_entries:
             entry.scorer.init(ctx)
@@ -161,7 +159,9 @@ class Evaluator:
         Returns:
             List of `Score` from each scorer and its name.
         """
-        ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
+        # The unmodified model's rollouts are not judged: if it degenerates, that is
+        # a property of the model, not something an abliteration trial caused.
+        ctx = Context(settings=self.settings, model=self.model)
         return [
             (entry.name, entry.scorer.get_baseline_score(ctx))
             for entry in self._scorer_entries

@@ -413,7 +413,8 @@ class Settings(BaseSettings):
     thinking_judge: Literal["none", "shieldstral", "openrouter"] = Field(
         default="none",
         description=(
-            "Judge used to retire degenerate rollouts in thinking mode. Options: "
+            "Judge used to retire degenerate rollouts of the modified model in thinking mode; "
+            "the unmodified model's rollouts are not judged. Options: "
             '"none" (no judge), '
             '"shieldstral" (local classifier downloaded from Hugging Face), '
             '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable).'
@@ -438,6 +439,15 @@ class Settings(BaseSettings):
         description=(
             "Whether to judge only the first thinking chunk and let rollouts that pass it "
             "think to the end unjudged. The answer is still judged."
+        ),
+    )
+
+    abort_trial_on_retirement: bool = Field(
+        default=False,
+        description=(
+            "Whether to abort a trial as soon as the judge retires one of its rollouts, "
+            "skipping the rest of the trial's evaluation. The trial is marked as pruned, "
+            "which the optimizer counts as a bad result."
         ),
     )
 

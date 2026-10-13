@@ -87,7 +87,7 @@ from .config import (
     QuantizationMethod,
 )
 from .evaluator import Evaluator
-from .model import Model, get_model_class
+from .model import Model, RolloutRetired, get_model_class
 from .modifier import load_and_init_modifiers
 from .plugin import Context, is_builtin_plugin
 from .reproduce import (
@@ -662,6 +662,10 @@ def run():
         )
         print(f"* Logging the run to [bold]{run_log_directory}[/]")
 
+    # Only the optimization trials are aborted; evaluating a model outside of them
+    # counts a retired rollout like any other result.
+    model.abort_on_retirement = settings.abort_trial_on_retirement
+
     trial_index = 0
     start_index = 0
     start_time = time.perf_counter()
@@ -688,7 +692,29 @@ def run():
         print(f"* Modifying model using {modifier_name}...")
         modifier.modify_model(ctx, parameters)
         print("* Evaluating...")
-        scores = evaluator.get_scores()
+        try:
+            scores = evaluator.get_scores()
+        except RolloutRetired as error:
+            aborted = {"request": error.request, "part": error.part}
+            trial.set_user_attr("aborted", aborted)
+            print(
+                f"  * [red]Trial aborted: the {error.part} for the request "
+                f"[bold]{escape(repr(error.request[:100]))}[/] degenerated.[/]"
+            )
+            if run_log_directory is not None:
+                append_trial_record(
+                    run_log_directory,
+                    {
+                        "index": trial_index,
+                        "number": trial.number,
+                        "datetime_start": trial.datetime_start,
+                        "duration": time.perf_counter() - trial_start_time,
+                        "params": trial.params,
+                        "parameters": parameters.to_dict(),
+                        "aborted": aborted,
+                    },
+                )
+            raise TrialPruned()
         objective_values = evaluator.get_objective_values(scores)
         for name, score in scores:
             print(f"  * [bold]{name}:[/] [green]{score.rich_display}[/]")
@@ -784,6 +810,14 @@ def run():
                 t for t in study.trials if t.state == TrialState.COMPLETE
             ]
             if not completed_trials:
+                aborted_trials = [t for t in study.trials if "aborted" in t.user_attrs]
+                if aborted_trials:
+                    print()
+                    print(
+                        f"[red]No trial completed: [bold]{len(aborted_trials)}[/] were aborted "
+                        "because one of their rollouts degenerated.[/]"
+                    )
+                    return
                 raise KeyboardInterrupt
 
             # Best trials isn't sorted, so sort by all the scores in non-decreasing order.

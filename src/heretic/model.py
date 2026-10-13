@@ -74,6 +74,16 @@ class Rollout:
     retired: bool
 
 
+class RolloutRetired(Exception):
+    """Raised when the judge retires a rollout while abort_on_retirement is set."""
+
+    def __init__(self, request: str, part: str):
+        super().__init__(f"The {part} for a request degenerated.")
+        self.request = request
+        # "thinking" or "answer"
+        self.part = part
+
+
 @dataclass
 class _RolloutState:
     prompt: Prompt
@@ -96,6 +106,9 @@ class _RolloutState:
 
 
 class Model:
+    # Whether a rollout retired by the judge raises RolloutRetired.
+    abort_on_retirement = False
+
     model: PreTrainedModel | PeftModel
     tokenizer: PreTrainedTokenizerBase
     # Set for multimodal models, None for text-only ones.
@@ -772,6 +785,11 @@ class Model:
                 if score > settings.judge_threshold:
                     state.done = True
                     state.retired = True
+                    if self.abort_on_retirement:
+                        raise RolloutRetired(
+                            state.prompt.user,
+                            "thinking" if state.closer_end is None else "answer",
+                        )
 
     def _answer_ids(self, state: _RolloutState) -> list[int]:
         assert state.closer_end is not None

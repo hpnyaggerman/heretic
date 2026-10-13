@@ -93,7 +93,8 @@ thinking_sampling = "model"
 # repetition_penalty), applied last, on top of the model's generation config and of thinking_sampling.
 thinking_generation_kwargs = {}
 
-# Judge used to retire degenerate rollouts in thinking mode. Options:
+# Judge used to retire degenerate rollouts of the modified model in thinking mode;
+# the unmodified model's rollouts are not judged. Options:
 # "none" (no judge),
 # "shieldstral" (local classifier downloaded from Hugging Face),
 # "openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable).
@@ -108,6 +109,12 @@ judge_criteria = "Degenerate output is repetitive, stuck in a loop, incoherent, 
 # Whether to judge only the first thinking chunk and let rollouts that pass it
 # think to the end unjudged. The answer is still judged.
 judge_first_chunk_only = false
+
+# Whether to abort a trial as soon as the judge retires one of its rollouts, skipping the rest
+# of the trial's evaluation. The trial is marked as pruned, which the optimizer counts as a bad
+# result. Scorers run in the order of the scorers list, so put the one most likely to expose a
+# broken model first.
+abort_trial_on_retirement = false
 
 # OpenRouter model ID used when thinking_judge is "openrouter". Required in that case.
 # openrouter_model = "<provider>/<model>"
