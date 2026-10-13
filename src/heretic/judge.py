@@ -13,6 +13,7 @@ import httpx
 import huggingface_hub
 import torch
 from openrouter import OpenRouter, components
+from openrouter.errors import OpenRouterError
 from openrouter.types import UNSET
 from rich.markup import escape
 from transformers import (
@@ -27,6 +28,27 @@ from .utils import print
 
 SHIELDSTRAL_MODEL = "mistralai/Shieldstral-1.0-3B"
 QUESTION = "Is the model output degenerate?"
+
+
+# HTTP statuses of OpenRouter errors that retrying cannot fix. Out of credits (402) is
+# not among them, because credits can be added while the failed requests wait.
+PERMANENT_ERROR_STATUSES = {400, 401, 403, 404, 413, 422}
+
+
+def raise_if_permanent(error: Exception) -> None:
+    """
+    Raises if a failed judge request cannot succeed on retry, so that the run stops
+    instead of retrying it forever. Rate limits, overloaded providers, server and
+    network errors, and unusable replies are left to be retried.
+    """
+    if (
+        isinstance(error, OpenRouterError)
+        and error.status_code in PERMANENT_ERROR_STATUSES
+    ):
+        raise RuntimeError(
+            f"Judge request failed with HTTP {error.status_code}, which retrying "
+            f"cannot fix: {error.body}"
+        ) from error
 
 
 def get_provider_preferences(
@@ -227,7 +249,9 @@ class OpenRouterJudge(Judge):
         # Waiting happens here rather than in the workers, so that Ctrl+C stops it.
         while len(verdicts) < len(requests):
             pending = [i for i in range(len(requests)) if i not in verdicts]
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            # The requests are the rollouts of one generation batch, all sent at once so
+            # that generation waits for a single round of verdicts.
+            with ThreadPoolExecutor(max_workers=len(pending)) as executor:
                 futures = [
                     executor.submit(self._send, requests[i], texts[i]) for i in pending
                 ]
@@ -241,6 +265,7 @@ class OpenRouterJudge(Judge):
                         self.cost += usage.cost
                     verdicts[i] = self._verdict(result)
                 except Exception as error:
+                    raise_if_permanent(error)
                     message = escape(f"{type(error).__name__}: {error}")
                     print(f"[bold red]Judge request failed: {message}[/]")
 

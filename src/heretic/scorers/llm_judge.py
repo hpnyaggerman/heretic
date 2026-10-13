@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from rich.markup import escape
 
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
-from heretic.judge import get_provider_preferences
+from heretic.judge import get_provider_preferences, raise_if_permanent
 from heretic.scorer import Context, Score, Scorer
 from heretic.utils import Prompt, format_dataset_specification, print
 
@@ -414,7 +414,11 @@ class LLMJudge(Scorer):
         # Waiting happens here rather than in the workers, so that Ctrl+C stops it.
         while len(values) < len(transcripts):
             pending = [i for i in range(len(transcripts)) if i not in values]
-            with ThreadPoolExecutor(max_workers=8) as executor:
+            # Concurrency scales with the generation batch size, so that judging
+            # keeps pace with generation.
+            with ThreadPoolExecutor(
+                max_workers=max(8, self.heretic_settings.batch_size)
+            ) as executor:
                 futures = [
                     executor.submit(
                         self._send, instructions[i], categories[i], transcripts[i]
@@ -426,6 +430,7 @@ class LLMJudge(Scorer):
                 try:
                     values[i] = self._parse_value(future.result(), categories[i])
                 except Exception as error:
+                    raise_if_permanent(error)
                     message = escape(f"{type(error).__name__}: {error}")
                     print(f"[bold red]Judge request failed: {message}[/]")
 
