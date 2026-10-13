@@ -149,6 +149,9 @@ scorers = [
     # This scorer reports the fraction of 20 applied-reasoning questions the model fails to
     # answer correctly through a tool call:
     # { plugin = "heretic.scorers.quality_canary.QualityCanary", optimization = "minimize" },
+    # This scorer reports how much the trial changed the abliterable weights, relative to
+    # their original norm, in percent, computed from the trial's adapters alone:
+    # { plugin = "heretic.scorers.weight_disturbance.WeightDisturbance", optimization = "minimize" },
 ]
 
 # List of modifier plugin configs. Each entry is an object
