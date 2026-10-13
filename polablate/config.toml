@@ -55,10 +55,12 @@ Answer with a JSON object whose only field, degenerate, is true if the output so
 # hard reasoning exposes damage soonest and is graded without judge calls, and the stories,
 # the longest outputs with the most expensive judge calls, come last. The weight disturbance
 # is computed from the trial's adapters alone, at no cost, and puts a known label on changes
-# that none of the other scorers measure.
+# that none of the other scorers measure. CogToM's short answers, given without thinking,
+# follow the canary.
 scorers = [
     { plugin = "heretic.scorers.weight_disturbance.WeightDisturbance", optimization = "minimize" },
     { plugin = "heretic.scorers.quality_canary.QualityCanary", optimization = "minimize" },
+    { plugin = "heretic.scorers.cog_tom.CogToM", optimization = "minimize" },
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "refusal" },
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "story" },
 ]

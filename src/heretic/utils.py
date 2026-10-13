@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 import tempfile
 import traceback
 from dataclasses import dataclass
@@ -155,6 +156,27 @@ class Prompt:
     # Override the global settings of the same names.
     max_response_length: int | None = None
     max_thinking_length: int | None = None
+    # Whether the model thinks before answering in thinking mode. If not, the prompt
+    # ends with a closed thinking block and the model answers directly.
+    thinking: bool = True
+
+
+# The syntax that chat templates put around a tool call: tags such as <tool_call> and
+# [TOOL_CALLS], the keys of a JSON call object, gpt-oss's channel header, and anything
+# that is not a letter.
+TOOL_CALL_SYNTAX = re.compile(
+    r"<[^<>]*>|\[[A-Z_]+\]|\b(?:name|arguments|parameters|commentary|json)\b"
+    r"|to=functions\.|[^A-Za-z]"
+)
+
+
+def is_bare_call(text: str, start: int, end: int) -> bool:
+    """
+    Whether the text consists of nothing but the tool call from `start` (the tool's name)
+    to `end`, apart from the template's call syntax: no reasoning, no commentary, and no
+    second call.
+    """
+    return not TOOL_CALL_SYNTAX.sub("", text[:start] + text[end:])
 
 
 def get_split_slice(split_str: str, length: int) -> tuple[int, int]:

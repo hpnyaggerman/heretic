@@ -19,7 +19,7 @@ from rich.markup import escape
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.judge import get_provider_preferences, raise_if_permanent
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import Prompt, format_dataset_specification, print
+from heretic.utils import Prompt, format_dataset_specification, is_bare_call, print
 
 TOOL_NAME = "submit_category"
 ARGUMENT_NAME = "category"
@@ -53,13 +53,24 @@ ANSWER_PATTERN = re.compile(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 def get_submitted_answer(text: str) -> str | None:
     """
-    Returns the answer argument of the first submit_answer call in the text, or None
-    if there is no such call. The call is located loosely, so that it is found in any
-    chat template's tool call syntax, including a call cut off by the response length limit.
+    Returns the answer argument of the submit_answer call that the text consists of, or
+    None if the text has no such call or anything besides it, apart from the template's
+    call syntax. The call is located loosely, so that it is found in any chat template's
+    tool call syntax, including a call cut off by the response length limit.
     """
     start = text.find(ANSWER_TOOL_NAME)
     match = None if start < 0 else ANSWER_PATTERN.search(text, start)
     if match is None:
+        return None
+    brace = text.rfind("{", start, match.start())
+    if brace < 0:
+        return None
+    # The call ends with its arguments object, or with the text if it was cut off.
+    try:
+        _, end = json.JSONDecoder(strict=False).raw_decode(text, brace)
+    except ValueError:
+        end = len(text)
+    if not is_bare_call(text, start, end):
         return None
     try:
         return json.loads(f'"{match.group(1)}"', strict=False)
@@ -275,8 +286,9 @@ class LLMJudge(Scorer):
     separate requests, each with its own prompt and categories, and the score is
     the mean of the two mean values.
 
-    The judged model is instructed to submit its answer with a submit_answer tool call,
-    and an answer submitted any other way is judged as an empty response.
+    The judged model is instructed to submit its answer with a submit_answer tool call.
+    An answer submitted any other way, or with anything written besides the call, is
+    judged as an empty response.
     """
 
     settings: Settings

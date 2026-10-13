@@ -152,6 +152,9 @@ scorers = [
     # This scorer reports how much the trial changed the abliterable weights, relative to
     # their original norm, in percent, computed from the trial's adapters alone:
     # { plugin = "heretic.scorers.weight_disturbance.WeightDisturbance", optimization = "minimize" },
+    # This scorer reports the fraction of the 415 questions of the CogToM theory-of-mind
+    # benchmark that the model answers wrongly, without thinking, through a tool call:
+    # { plugin = "heretic.scorers.cog_tom.CogToM", optimization = "minimize" },
 ]
 
 # List of modifier plugin configs. Each entry is an object
@@ -327,8 +330,9 @@ score_name = "LLM judge"
 # refusals, but any behavior can be targeted by rewriting both prompts and both category
 # lists, and choosing a dataset that elicits it.
 # The judged model is instructed to submit its answer with a submit_answer tool call, so that
-# the score also reflects its instruction following. An answer submitted any other way is
-# judged as an empty response, and the number of such answers is shown with the score.
+# the score also reflects its instruction following. An answer submitted any other way, or with
+# anything written besides the call, is judged as an empty response, and the number of such
+# answers is shown with the score.
 
 # Instructions for judging the response. The judge sees the user request, the thinking
 # (in thinking mode), and the response, and submits one of the response categories. Required.
@@ -432,6 +436,11 @@ max_response_length = 8192
 
 # Maximum number of thinking tokens for each answer in thinking mode.
 max_thinking_length = 65536
+
+
+[scorer.CogToM]
+# Maximum number of tokens to generate for each answer, which the model gives without thinking.
+max_response_length = 256
 
 
 [modifier.ARA]

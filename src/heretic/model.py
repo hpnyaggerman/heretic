@@ -537,20 +537,21 @@ class Model:
             for prompt in prompts
         ]
 
-        if self.settings.response_prefix:
-            # Append the common response prefix to the prompts so that evaluation happens
-            # at the point where responses start to differ for different prompts.
-            chat_prompts = [
-                chat_prompt
-                + (
-                    self.settings.response_prefix.removesuffix(HARMONY_FINAL_HEADER)
-                    if prompt.tools
-                    else self.settings.response_prefix
-                )
-                for prompt, chat_prompt in zip(prompts, chat_prompts)
-            ]
+        # Append the common response prefix to the prompts so that evaluation happens
+        # at the point where responses start to differ for different prompts.
+        return [
+            chat_prompt + self._response_prefix(prompt)
+            for prompt, chat_prompt in zip(prompts, chat_prompts)
+        ]
 
-        return chat_prompts
+    def _response_prefix(self, prompt: Prompt) -> str:
+        prefix = self.settings.response_prefix or ""
+        if self.settings.thinking and not prompt.thinking:
+            # Closing the thinking block at once makes the model answer without thinking.
+            prefix += self.settings.thinking_closer or ""
+        if prompt.tools:
+            prefix = prefix.removesuffix(HARMONY_FINAL_HEADER)
+        return prefix
 
     def _final_header_length(self, ids: list[int], prompt: Prompt) -> int:
         """
@@ -667,7 +668,8 @@ class Model:
                         return_token_type_ids=False,
                     )["input_ids"],
                 ),
-                closer_end=None if closer_ids else 0,
+                # A prompt that does not think starts in its answer.
+                closer_end=None if closer_ids and prompt.thinking else 0,
             )
             for prompt, chat_prompt in zip(prompts, self._chat_prompts(prompts))
         ]

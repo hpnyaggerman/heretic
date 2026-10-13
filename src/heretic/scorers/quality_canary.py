@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field, PositiveInt
 
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import Prompt
+from heretic.utils import Prompt, is_bare_call
 
 SUBMIT = "submit_answer"
 ABSTAIN = "report_unanswerable"
@@ -86,11 +86,12 @@ def get_submit_tool(question: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def get_call(text: str) -> tuple[str, Any] | None:
+def get_call(text: str, bare: bool) -> tuple[str, Any] | None:
     """
     Returns the name and arguments of the last call to either tool in the text, or None.
     The arguments are the first JSON object after the tool's name, which locates them
-    in the usual chat template call syntaxes.
+    in the usual chat template call syntaxes. If `bare` is set, the text must consist of
+    nothing but the call, apart from the template's call syntax.
     """
     start, name = max((text.rfind(name), name) for name in (SUBMIT, ABSTAIN))
     if start < 0:
@@ -99,8 +100,10 @@ def get_call(text: str) -> tuple[str, Any] | None:
     if brace < 0:
         return None
     try:
-        arguments, _ = json.JSONDecoder().raw_decode(text, brace)
+        arguments, end = json.JSONDecoder().raw_decode(text, brace)
     except ValueError:
+        return None
+    if bare and not is_bare_call(text, start, end):
         return None
     return name, arguments
 
@@ -187,7 +190,9 @@ class QualityCanary(Scorer):
     and its graded fields match the answer keys.
 
     The questions come from the lora_canary suite; their keys are computed in that suite.
-    In non-thinking mode, the model reasons in its response before calling the tool.
+    In non-thinking mode, the model reasons in its response before calling the tool. In
+    thinking mode, it reasons in its thinking, and its response must consist of nothing
+    but the tool call.
     """
 
     settings: Settings
@@ -221,7 +226,10 @@ class QualityCanary(Scorer):
         else:
             responses = ctx.get_responses(self.prompts)
 
-        calls = [get_call(response) for response in responses]
+        calls = [
+            get_call(response, bare=self.heretic_settings.thinking)
+            for response in responses
+        ]
         total = len(self.questions)
         failed = sum(
             not is_passed(question, call)
