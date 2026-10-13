@@ -568,6 +568,13 @@ class Model:
             return closer_ids[: -len(header)]
         return closer_ids
 
+    def _batch_size(self, prompts: list[Prompt]) -> int:
+        """The largest generation batch size that all of the prompts allow."""
+        return min(
+            (prompt.batch_size or self.settings.batch_size for prompt in prompts),
+            default=self.settings.batch_size,
+        )
+
     def generate(
         self,
         prompts: list[Prompt],
@@ -686,7 +693,8 @@ class Model:
                     (answering, True),
                 ]
             for group, chunked in groups:
-                for batch in batchify(group, settings.batch_size):
+                batch_size = self._batch_size([state.prompt for state in group])
+                for batch in batchify(group, batch_size):
                     self._advance(
                         batch,
                         closer_ids,
@@ -852,7 +860,7 @@ class Model:
     ) -> list[str]:
         responses = []
 
-        for batch in batchify(prompts, self.settings.batch_size):
+        for batch in batchify(prompts, self._batch_size(prompts)):
             responses.extend(
                 self.get_responses(
                     batch,

@@ -442,6 +442,10 @@ max_thinking_length = 65536
 # Maximum number of tokens to generate for each answer, which the model gives without thinking.
 max_response_length = 256
 
+# Number of questions answered at once, overriding the global batch_size. The short answers
+# usually allow a larger batch than long generations do.
+# batch_size = 64
+
 
 [modifier.ARA]
 # Whether to renormalize the rows of the modified matrices to preserve

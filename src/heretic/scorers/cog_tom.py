@@ -23,6 +23,14 @@ class Settings(BaseModel):
         description="Maximum number of tokens to generate for each answer.",
     )
 
+    batch_size: PositiveInt | None = Field(
+        default=None,
+        description=(
+            "Number of questions answered at once, overriding the global batch_size. "
+            "The short answers usually allow a larger batch than long generations do."
+        ),
+    )
+
 
 def get_answer_tool(options: list[str]) -> dict[str, Any]:
     return {
@@ -84,6 +92,7 @@ class CogToM(Scorer):
                 ),
                 tools=[get_answer_tool(list(question["options"]))],
                 max_response_length=self.settings.max_response_length,
+                batch_size=self.settings.batch_size,
                 thinking=False,
             )
             for question in self.questions

@@ -156,6 +156,7 @@ class Prompt:
     # Override the global settings of the same names.
     max_response_length: int | None = None
     max_thinking_length: int | None = None
+    batch_size: int | None = None
     # Whether the model thinks before answering in thinking mode. If not, the prompt
     # ends with a closed thinking block and the model answers directly.
     thinking: bool = True

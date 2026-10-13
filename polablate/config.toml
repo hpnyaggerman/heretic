@@ -19,6 +19,10 @@ max_response_length = 4096
 # thinking that concludes; thinking that runs on without concluding is judged as inconclusive.
 max_thinking_length = 65536
 
+# Number of prompts generated at once, for every scorer that does not set its own. Setting it
+# skips the automatic batch size search.
+batch_size = 10
+
 # Retire rollouts that loop or otherwise degenerate, judged every thinking_chunk_size tokens
 # of the thinking and of the answer. The unmodified model's rollouts are not judged.
 thinking_judge = "openrouter"
@@ -64,6 +68,12 @@ scorers = [
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "refusal" },
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "story" },
 ]
+
+[scorer.CogToM]
+# Number of questions answered at once, overriding the global batch_size. CogToM's short
+# answers, given without thinking, allow a larger batch than the thinking scorers do: its
+# longest input is about 760 tokens, about 1,024 with the 256-token answer cap.
+batch_size = 128
 
 # Settings shared by both judges. Each judge's own settings are in its instance section below,
 # which keeps the two from inheriting each other's prompts and categories.
