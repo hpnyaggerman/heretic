@@ -79,6 +79,11 @@ scorers = [
     { plugin = "heretic.scorers.llm_judge.LLMJudge", optimization = "minimize", instance_name = "story" },
 ]
 
+[scorer.QualityCanary]
+# The four questions Qwen3.8-27B thinks longest on (median 6,000 to 24,000 tokens on
+# OpenRouter), which held the whole canary up for most of its run.
+excluded_questions = ["Q5a", "Q9a", "Q6a", "Q9b"]
+
 [scorer.CogToM]
 # Number of questions answered at once, overriding the global batch_size. CogToM's short
 # answers, given without thinking, allow a larger batch than the thinking scorers do: its
