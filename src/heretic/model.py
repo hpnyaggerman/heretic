@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+import time
 from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -32,7 +33,7 @@ from transformers.generation import (
 from .config import QuantizationMethod, Settings
 from .judge import Judge
 from .system import empty_cache
-from .utils import Prompt, batchify, format_exception, print
+from .utils import Prompt, batchify, format_duration, format_exception, print
 
 
 def get_model_class(
@@ -681,6 +682,7 @@ class Model:
             for prompt, chat_prompt in zip(prompts, self._chat_prompts(prompts))
         ]
 
+        start_time = time.perf_counter()
         while active := [state for state in states if not state.done]:
             thinking = [state for state in active if state.closer_end is None]
             answering = [state for state in active if state.closer_end is not None]
@@ -703,6 +705,13 @@ class Model:
                         stop_string,
                         judge,
                         chunked,
+                    )
+                    elapsed = time.perf_counter() - start_time
+                    tokens = sum(len(state.generated) for state in states)
+                    print(
+                        f"    [grey50]* Rollouts: {sum(state.done for state in states)}/{len(states)} finished "
+                        f"({sum(state.retired for state in states)} retired), {tokens:,} tokens "
+                        f"at {tokens / elapsed:,.0f} tokens/s, {format_duration(elapsed)}[/]"
                     )
 
         return [self._rollout(state) for state in states]
@@ -860,12 +869,20 @@ class Model:
     ) -> list[str]:
         responses = []
 
+        start_time = time.perf_counter()
         for batch in batchify(prompts, self._batch_size(prompts)):
             responses.extend(
                 self.get_responses(
                     batch,
                     skip_special_tokens=skip_special_tokens,
                 )
+            )
+            elapsed = time.perf_counter() - start_time
+            # Batches take about equally long, so the elapsed time extrapolates.
+            remaining = elapsed / len(responses) * (len(prompts) - len(responses))
+            print(
+                f"    [grey50]* Responses: {len(responses)}/{len(prompts)}, "
+                f"{format_duration(elapsed)} elapsed, about {format_duration(remaining)} left[/]"
             )
 
         return responses

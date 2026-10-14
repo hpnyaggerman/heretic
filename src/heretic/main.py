@@ -624,8 +624,7 @@ def run():
         settings.model = settings.evaluate_model
         model.reset_model()
         print("* Evaluating...")
-        for name, score in evaluator.get_scores():
-            print(f"  * [bold]{name}:[/] [green]{score.rich_display}[/]")
+        evaluator.get_scores()
         if evaluator.judge is not None:
             print(evaluator.judge.usage())
         return
@@ -718,8 +717,6 @@ def run():
                 )
             raise TrialPruned()
         objective_values = evaluator.get_objective_values(scores)
-        for name, score in scores:
-            print(f"  * [bold]{name}:[/] [green]{score.rich_display}[/]")
 
         elapsed_time = time.perf_counter() - start_time
         remaining_time = (elapsed_time / (trial_index - start_index)) * (

@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -12,7 +14,7 @@ from .judge import load_judge
 from .model import Model
 from .plugin import Context, is_builtin_plugin, load_plugin
 from .scorer import Score, Scorer
-from .utils import parse_study_direction, print
+from .utils import format_duration, parse_study_direction, print
 
 
 @dataclass
@@ -45,8 +47,6 @@ class Evaluator:
         print()
         print("Getting baseline scores...")
         self.baseline_scores = self.get_baseline_scores()
-        for name, score in self.baseline_scores:
-            print(f"* Baseline [bold]{name}:[/] [green]{score.rich_display}[/]")
 
     def _load_and_init_scorers(self) -> None:
         """
@@ -149,7 +149,8 @@ class Evaluator:
         """
         ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
         return [
-            (entry.name, entry.scorer.get_score(ctx)) for entry in self._scorer_entries
+            (entry.name, self._timed(entry.name, entry.scorer.get_score, ctx))
+            for entry in self._scorer_entries
         ]
 
     def get_baseline_scores(self) -> list[tuple[str, Score]]:
@@ -163,9 +164,30 @@ class Evaluator:
         # a property of the model, not something an abliteration trial caused.
         ctx = Context(settings=self.settings, model=self.model)
         return [
-            (entry.name, entry.scorer.get_baseline_score(ctx))
+            (
+                entry.name,
+                self._timed(
+                    f"Baseline {entry.name}", entry.scorer.get_baseline_score, ctx
+                ),
+            )
             for entry in self._scorer_entries
         ]
+
+    @staticmethod
+    def _timed(
+        name: str,
+        get_score: Callable[[Context], Score],
+        ctx: Context,
+    ) -> Score:
+        """Runs a scorer, printing when it starts and its score and duration when it ends."""
+        print(f"  * [bold]{name}[/]...")
+        start_time = time.perf_counter()
+        score = get_score(ctx)
+        print(
+            f"  * [bold]{name}:[/] [green]{score.rich_display}[/] "
+            f"[grey50]({format_duration(time.perf_counter() - start_time)})[/]"
+        )
+        return score
 
     def get_paired_score_records(
         self, scores: list[tuple[str, Score]]

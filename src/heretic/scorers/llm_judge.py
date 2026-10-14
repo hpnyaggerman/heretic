@@ -422,6 +422,7 @@ class LLMJudge(Scorer):
         """
 
         values: dict[int, float] = {}
+        print(f"    [grey50]* Judging {len(transcripts)} texts...[/]")
 
         # Waiting happens here rather than in the workers, so that Ctrl+C stops it.
         while len(values) < len(transcripts):
