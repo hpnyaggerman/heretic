@@ -219,6 +219,8 @@ class RolloutRetired(Exception):
         self.request = request
         # "thinking" or "answer"
         self.part = part
+        # The scores of the scorers that finished before the abort, set by the evaluator.
+        self.scores: list[tuple[str, Any]] = []
 
 
 @dataclass

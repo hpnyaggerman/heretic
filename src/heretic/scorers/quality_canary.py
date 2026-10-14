@@ -239,6 +239,10 @@ class QualityCanary(Scorer):
     def reproducible(self) -> bool:
         return True
 
+    @property
+    def value_range(self) -> tuple[float, float]:
+        return (0.0, 1.0)
+
     def init(self, ctx: Context) -> None:
         questions = json.loads(
             Path(__file__).with_suffix(".json").read_text(encoding="utf-8")

@@ -88,6 +88,10 @@ class KeywordRate(Scorer):
     def score_name(self) -> str:
         return self.settings.score_name
 
+    @property
+    def value_range(self) -> tuple[float, float]:
+        return (0.0, 1.0)
+
     def init(self, ctx: Context) -> None:
         print()
         print(

@@ -457,8 +457,10 @@ class Settings(BaseSettings):
         default=False,
         description=(
             "Whether to abort a trial as soon as the judge retires one of its rollouts, "
-            "skipping the rest of the trial's evaluation. The trial is marked as pruned, "
-            "which the optimizer counts as a bad result."
+            "skipping the rest of the trial's evaluation. The optimizer gets the scores the "
+            "trial finished and the worst value for each other objective (or the trial is "
+            "pruned if one of those scorers has no value range), and the trial is never offered "
+            "as a result."
         ),
     )
 

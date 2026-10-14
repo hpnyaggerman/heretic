@@ -73,6 +73,10 @@ class CogToM(Scorer):
     def reproducible(self) -> bool:
         return True
 
+    @property
+    def value_range(self) -> tuple[float, float]:
+        return (0.0, 1.0)
+
     def init(self, ctx: Context) -> None:
         path = Path(__file__).with_suffix(".jsonl")
         self.questions = [

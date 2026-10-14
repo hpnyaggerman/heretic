@@ -37,8 +37,9 @@ thinking_judge = "openrouter"
 # larger chunks waste less time on a fast model, at the cost of catching a loop a little later.
 thinking_chunk_size = 1024
 
-# A trial with a retired rollout is aborted on the spot and marked as pruned, which the
-# optimizer counts as a bad result, instead of evaluating a broken model to the end.
+# A trial with a retired rollout is aborted on the spot instead of evaluating a broken model
+# to the end. The optimizer gets the scores it finished and the worst value for the others,
+# and the trial is never offered as a result.
 abort_trial_on_retirement = true
 
 # OpenRouter model ID of that judge. Required.

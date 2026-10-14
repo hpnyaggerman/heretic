@@ -44,6 +44,15 @@ class Scorer(Plugin, ABC):
         """
         return self.__class__.__name__
 
+    @property
+    def value_range(self) -> tuple[float, float] | None:
+        """
+        The lowest and highest values that `get_score()` can return, or None if they
+        are unbounded. A trial aborted before this scorer finishes gets the worst of
+        the two for it; without them, such a trial is pruned instead.
+        """
+        return None
+
     def __init__(
         self,
         heretic_settings: HereticSettings,

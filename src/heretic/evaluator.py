@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 from .config import DatasetSpecification, ScorerConfig, Settings
 from .judge import load_judge
-from .model import Model
+from .model import Model, RolloutRetired
 from .plugin import Context, is_builtin_plugin, load_plugin
 from .scorer import Score, Scorer
 from .utils import format_duration, parse_study_direction, print
@@ -148,10 +148,16 @@ class Evaluator:
             List of `Score` from each scorer and its name.
         """
         ctx = Context(settings=self.settings, model=self.model, judge=self.judge)
-        return [
-            (entry.name, self._timed(entry.name, entry.scorer.get_score, ctx))
-            for entry in self._scorer_entries
-        ]
+        scores = []
+        for entry in self._scorer_entries:
+            try:
+                scores.append(
+                    (entry.name, self._timed(entry.name, entry.scorer.get_score, ctx))
+                )
+            except RolloutRetired as error:
+                error.scores = scores
+                raise
+        return scores
 
     def get_baseline_scores(self) -> list[tuple[str, Score]]:
         """
@@ -247,6 +253,34 @@ class Evaluator:
         return tuple(
             score_by_name[entry.name].value for entry in self._objective_entries()
         )
+
+    def get_aborted_objective_values(
+        self, scores: list[tuple[str, Score]]
+    ) -> tuple[float, ...] | None:
+        """
+        Objective values of a trial aborted when one of its rollouts was retired:
+        the `scores` of the scorers that finished, and the worst value of each one
+        that did not. None if one that did not finish has no value range.
+
+        A trial that degenerated late thereby still counts for what it measured,
+        instead of looking to the optimizer like one that degenerated at once.
+        """
+        score_by_name = {name: score for name, score in scores}
+        values = []
+        for entry in self._objective_entries():
+            if entry.name in score_by_name:
+                values.append(score_by_name[entry.name].value)
+                continue
+            value_range = entry.scorer.value_range
+            if value_range is None:
+                return None
+            lowest, highest = value_range
+            minimize = (
+                parse_study_direction(entry.config.optimization)
+                == StudyDirection.MINIMIZE
+            )
+            values.append(highest if minimize else lowest)
+        return tuple(values)
 
     def get_objective_directions(self) -> list[StudyDirection]:
         """Get optimization directions for objectives."""

@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar, cast
 
 import huggingface_hub
 import tomli_w
@@ -74,6 +74,30 @@ def parse_study_direction(optimization: str) -> StudyDirection:
     if optimization == "none":
         return StudyDirection.NOT_SET
     return StudyDirection[optimization.upper()]
+
+
+def get_pareto_front(
+    trials: list[FrozenTrial], directions: list[StudyDirection]
+) -> list[FrozenTrial]:
+    """The complete trials whose objective values no other of them dominates."""
+    losses = []
+    for trial in trials:
+        # This cast is valid because complete trials have values.
+        values = cast(list[float], trial.values)
+        losses.append(
+            [
+                value if direction == StudyDirection.MINIMIZE else -value
+                for value, direction in zip(values, directions)
+            ]
+        )
+    return [
+        trial
+        for trial, loss in zip(trials, losses)
+        if not any(
+            other != loss and all(a <= b for a, b in zip(other, loss))
+            for other in losses
+        )
+    ]
 
 
 def print_memory_usage():

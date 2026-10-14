@@ -103,6 +103,7 @@ from .utils import (
     format_duration,
     format_exception,
     get_file_sha256,
+    get_pareto_front,
     get_readme_intro,
     is_dataset_specification_reproducible,
     is_hf_path,
@@ -702,6 +703,17 @@ def run():
                 f"  * [red]Trial aborted: the {error.part} for the request "
                 f"[bold]{escape(repr(error.request[:100]))}[/] degenerated.[/]"
             )
+            score_records = evaluator.get_paired_score_records(error.scores)
+            trial.set_user_attr("scores", score_records)
+            aborted_values = evaluator.get_aborted_objective_values(error.scores)
+            if aborted_values is not None:
+                finished = {name for name, _ in error.scores}
+                unfinished = [
+                    name
+                    for name in evaluator.get_objective_names()
+                    if name not in finished
+                ]
+                print(f"  * Scored with the worst value for: {', '.join(unfinished)}")
             if run_log_directory is not None:
                 append_trial_record(
                     run_log_directory,
@@ -713,9 +725,13 @@ def run():
                         "params": trial.params,
                         "parameters": parameters.to_dict(),
                         "aborted": aborted,
+                        "scores": score_records,
+                        "objective_values": aborted_values,
                     },
                 )
-            raise TrialPruned()
+            if aborted_values is None:
+                raise TrialPruned()
+            return aborted_values
         objective_values = evaluator.get_objective_values(scores)
 
         elapsed_time = time.perf_counter() - start_time
@@ -805,8 +821,12 @@ def run():
             # If no trials at all have been evaluated, the study must have been stopped
             # by pressing Ctrl+C while the first trial was running. In this case, we just
             # re-raise the interrupt to invoke the standard handler defined below.
+            # A trial aborted because a rollout degenerated completes with the worst value
+            # for what it did not finish, but is never offered.
             completed_trials = [
-                t for t in study.trials if t.state == TrialState.COMPLETE
+                t
+                for t in study.trials
+                if t.state == TrialState.COMPLETE and "aborted" not in t.user_attrs
             ]
             if not completed_trials:
                 aborted_trials = [t for t in study.trials if "aborted" in t.user_attrs]
@@ -819,9 +839,9 @@ def run():
                     return
                 raise KeyboardInterrupt
 
-            # Best trials isn't sorted, so sort by all the scores in non-decreasing order.
+            # The Pareto front isn't sorted, so sort by all the scores in non-decreasing order.
             sorted_trials = sorted(
-                study.best_trials,
+                get_pareto_front(completed_trials, directions),
                 key=lambda trial: tuple(
                     next(
                         (

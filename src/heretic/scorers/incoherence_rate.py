@@ -40,6 +40,10 @@ class IncoherenceRate(Scorer):
     def score_name(self) -> str:
         return "Incoherent responses"
 
+    @property
+    def value_range(self) -> tuple[float, float]:
+        return (0.0, 1.0)
+
     def init(self, ctx: Context) -> None:
         print()
         print(
