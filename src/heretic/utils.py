@@ -171,6 +171,34 @@ TOOL_CALL_SYNTAX = re.compile(
 )
 
 
+# A call in the syntax of Qwen3.5's chat template, which puts each argument in a
+# <parameter=name> block inside <function=name> instead of a JSON object. A call cut off
+# by the length limit runs to the end of the text.
+XML_CALL = re.compile(r"<function=([^<>\s]+)>(.*?)(?:</function>|\Z)", re.DOTALL)
+XML_PARAMETER = re.compile(
+    r"<parameter=([^<>\s]+)>\n?(.*?)\n?(?:</parameter>|(?=<parameter=)|\Z)", re.DOTALL
+)
+
+
+def find_xml_calls(text: str) -> list[tuple[int, int, str, dict[str, str]]]:
+    """
+    The start, end, function name and arguments of each call in the text that is written
+    in Qwen3.5's <function=...> syntax. Argument values are the text of their blocks.
+    """
+    return [
+        (
+            call.start(),
+            call.end(),
+            call.group(1),
+            {
+                parameter.group(1): parameter.group(2)
+                for parameter in XML_PARAMETER.finditer(call.group(2))
+            },
+        )
+        for call in XML_CALL.finditer(text)
+    ]
+
+
 def is_bare_call(text: str, start: int, end: int) -> bool:
     """
     Whether the text consists of nothing but the tool call from `start` (the tool's name)

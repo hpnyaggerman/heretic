@@ -19,7 +19,13 @@ from rich.markup import escape
 from heretic.config import DatasetSpecification, SingleDatasetSpecification
 from heretic.judge import get_provider_preferences, raise_if_permanent
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import Prompt, format_dataset_specification, is_bare_call, print
+from heretic.utils import (
+    Prompt,
+    find_xml_calls,
+    format_dataset_specification,
+    is_bare_call,
+    print,
+)
 
 TOOL_NAME = "submit_category"
 ARGUMENT_NAME = "category"
@@ -58,6 +64,13 @@ def get_submitted_answer(text: str) -> str | None:
     call syntax. The call is located loosely, so that it is found in any chat template's
     tool call syntax, including a call cut off by the response length limit.
     """
+    calls = [call for call in find_xml_calls(text) if call[2] == ANSWER_TOOL_NAME]
+    if calls:
+        start, end, _, arguments = calls[0]
+        if "answer" not in arguments or not is_bare_call(text, start, end):
+            return None
+        return arguments["answer"]
+
     start = text.find(ANSWER_TOOL_NAME)
     match = None if start < 0 else ANSWER_PATTERN.search(text, start)
     if match is None:

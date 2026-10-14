@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field, PositiveInt
 
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import Prompt, is_bare_call
+from heretic.utils import Prompt, find_xml_calls, is_bare_call
 
 SUBMIT = "submit_answer"
 ABSTAIN = "report_unanswerable"
@@ -91,13 +91,31 @@ def get_submit_tool(question: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def parse_value(value: str) -> Any:
+    """An argument value from a <parameter> block: JSON arrays and objects are decoded."""
+    if value.lstrip()[:1] in ("[", "{"):
+        try:
+            return json.loads(value)
+        except ValueError:
+            pass
+    return value
+
+
 def get_call(text: str, bare: bool) -> tuple[str, Any] | None:
     """
     Returns the name and arguments of the last call to either tool in the text, or None.
-    The arguments are the first JSON object after the tool's name, which locates them
-    in the usual chat template call syntaxes. If `bare` is set, the text must consist of
-    nothing but the call, apart from the template's call syntax.
+    Calls in Qwen3.5's <function=...> syntax are read as such; otherwise the arguments
+    are the first JSON object after the tool's name, which locates them in the other
+    usual chat template call syntaxes. If `bare` is set, the text must consist of nothing
+    but the call, apart from the template's call syntax.
     """
+    calls = [call for call in find_xml_calls(text) if call[2] in (SUBMIT, ABSTAIN)]
+    if calls:
+        start, end, name, arguments = calls[-1]
+        if bare and not is_bare_call(text, start, end):
+            return None
+        return name, {key: parse_value(value) for key, value in arguments.items()}
+
     start, name = max((text.rfind(name), name) for name in (SUBMIT, ABSTAIN))
     if start < 0:
         return None
