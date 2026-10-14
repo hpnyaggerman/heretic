@@ -9,7 +9,7 @@ from typing import Any
 from pydantic import BaseModel, Field, PositiveInt
 
 from heretic.scorer import Context, Score, Scorer
-from heretic.utils import Prompt, find_xml_calls, is_bare_call
+from heretic.utils import Prompt, ends_with_call, find_xml_calls
 
 SUBMIT = "submit_answer"
 ABSTAIN = "report_unanswerable"
@@ -101,20 +101,20 @@ def parse_value(value: str) -> Any:
     return value
 
 
-def get_call(text: str, bare: bool, syntax: str = "json") -> tuple[str, Any] | None:
+def get_call(text: str, syntax: str = "json") -> tuple[str, Any] | None:
     """
-    Returns the name and arguments of the last call to either tool in the text, or None.
-    In the "xml" syntax, calls are read as <function=...> blocks; in the "json" syntax, the
-    arguments are the first JSON object after the tool's name, which locates them in the
-    usual chat template call syntaxes. If `bare` is set, the text must consist of nothing
-    but the call, apart from the template's call syntax.
+    Returns the name and arguments of the last call to either tool in the text, or None
+    if there is none or anything but the template's call syntax follows it. Reasoning may
+    come before the call. In the "xml" syntax, calls are read as <function=...> blocks; in
+    the "json" syntax, the arguments are the first JSON object after the tool's name,
+    which locates them in the usual chat template call syntaxes.
     """
     if syntax == "xml":
         calls = [call for call in find_xml_calls(text) if call[2] in (SUBMIT, ABSTAIN)]
         if not calls:
             return None
-        start, end, name, arguments = calls[-1]
-        if bare and not is_bare_call(text, start, end):
+        _, end, name, arguments = calls[-1]
+        if not ends_with_call(text, end):
             return None
         return name, {key: parse_value(value) for key, value in arguments.items()}
 
@@ -128,7 +128,7 @@ def get_call(text: str, bare: bool, syntax: str = "json") -> tuple[str, Any] | N
         arguments, end = json.JSONDecoder().raw_decode(text, brace)
     except ValueError:
         return None
-    if bare and not is_bare_call(text, start, end):
+    if not ends_with_call(text, end):
         return None
     return name, arguments
 
@@ -140,10 +140,9 @@ def as_number(value: Any) -> float | None:
         return float(value)
     if isinstance(value, str):
         # Thousands separators, as in "215,837.01".
-        text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", value)
-        match = re.search(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text)
-        if match:
-            return float(match.group(0))
+        text = re.sub(r"(?<=\d),(?=\d{3}(?!\d))", "", value.strip())
+        if re.fullmatch(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?", text):
+            return float(text)
     return None
 
 
@@ -159,11 +158,18 @@ def as_lines(value: Any) -> list[str] | None:
 
 
 def as_datetime(value: Any) -> tuple[int, ...] | None:
-    match = re.search(r"(\d{4})-(\d{1,2})-(\d{1,2})[ T]+(\d{1,2}):(\d{2})", str(value))
+    match = re.fullmatch(
+        r"(\d{4})-(\d{1,2})-(\d{1,2})[ T]+(\d{1,2}):(\d{2})", str(value).strip()
+    )
     return tuple(int(part) for part in match.groups()) if match else None
 
 
 def is_correct(check: dict[str, Any], value: Any) -> bool:
+    """
+    Whether the value is the answer and nothing else: a number without units or words,
+    a date and time in the requested format alone, a peptide without separators or stop
+    symbol. Only case, spacing and punctuation of option names are not compared.
+    """
     kind, key = check["kind"], check["key"]
     if kind in ("num", "int"):
         number = as_number(value)
@@ -180,7 +186,7 @@ def is_correct(check: dict[str, Any], value: Any) -> bool:
             r"[^a-z0-9]", "", key.lower()
         )
     if kind == "protein":
-        return re.sub(r"[^A-Z]|STOP", "", str(value).upper()) == key
+        return str(value).strip().upper() == key
     if kind == "datetime":
         return as_datetime(value) == as_datetime(key)
     if kind == "lines":
@@ -194,9 +200,12 @@ def is_passed(question: dict[str, Any], call: tuple[str, Any] | None) -> bool:
     if call is None:
         return False
     name, arguments = call
+    if not isinstance(arguments, dict):
+        return False
+    # The call carries the answer and nothing else, so arguments the tool lacks fail it.
     if question["expect"] == "abstain":
-        return name == ABSTAIN
-    if name != SUBMIT or not isinstance(arguments, dict):
+        return name == ABSTAIN and set(arguments) <= {"missing_information"}
+    if name != SUBMIT or not set(arguments) <= {f["name"] for f in question["fields"]}:
         return False
     return all(
         field["name"] in arguments
@@ -215,9 +224,9 @@ class QualityCanary(Scorer):
     and its graded fields match the answer keys.
 
     The questions come from the lora_canary suite; their keys are computed in that suite.
-    In non-thinking mode, the model reasons in its response before calling the tool. In
-    thinking mode, it reasons in its thinking, and its response must consist of nothing
-    but the tool call.
+    The model may reason before calling the tool, in its thinking or its response, but
+    nothing may follow the call, and the call must carry exactly the answer: no arguments
+    the tool lacks, and values in the requested formats without anything added.
     """
 
     settings: Settings
@@ -261,10 +270,7 @@ class QualityCanary(Scorer):
             responses = ctx.get_responses(self.prompts)
 
         syntax = ctx.get_model().tool_call_syntax
-        calls = [
-            get_call(response, bare=self.heretic_settings.thinking, syntax=syntax)
-            for response in responses
-        ]
+        calls = [get_call(response, syntax) for response in responses]
         total = len(self.questions)
         failed = sum(
             not is_passed(question, call)

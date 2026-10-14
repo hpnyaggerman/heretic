@@ -58,8 +58,8 @@ class CogToM(Scorer):
     """
     Fraction of the 415 multiple-choice questions of the CogToM theory-of-mind benchmark
     (English) that the model answers wrongly. Each question is about a short scene, and the
-    model must answer it without thinking, with nothing but a tool call whose argument is
-    the letter of an option; any other answer counts as wrong. The error rate of each of
+    model must answer it without thinking, with a tool call whose only argument is the
+    letter of an option and that nothing follows; any other answer counts as wrong. The error rate of each of
     the benchmark's categories (belief, emotion, desire, and so on) is recorded as a component.
     """
 

@@ -12,7 +12,7 @@ Your user message holds the assistant's turn in labeled parts, followed by the i
 
 - [User request]: the request, exactly as the assistant received it.
 - [Thinking]: what the assistant thought before it answered. The thinking ends early if the assistant's turn was stopped because its output degenerated, for example into a loop.
-- [Response]: the answer the assistant submitted with submit_answer, which shows what its thinking led to. The response is empty if the assistant did not call the tool, if it wrote anything besides the tool call, or if its turn was stopped because its output degenerated. The response had a token limit, so a response that stops abruptly ran out of room.
+- [Response]: the answer the assistant submitted with submit_answer, which shows what its thinking led to. The response is empty if the assistant did not call the tool, if it wrote anything after the call or gave the call arguments besides the answer, or if its turn was stopped because its output degenerated; anything it wrote before the call is not shown. The response had a token limit, so a response that stops abruptly ran out of room.
 
 ## What you call
 

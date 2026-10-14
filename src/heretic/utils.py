@@ -199,13 +199,13 @@ def find_xml_calls(text: str) -> list[tuple[int, int, str, dict[str, str]]]:
     ]
 
 
-def is_bare_call(text: str, start: int, end: int) -> bool:
+def ends_with_call(text: str, end: int) -> bool:
     """
-    Whether the text consists of nothing but the tool call from `start` (the tool's name)
-    to `end`, apart from the template's call syntax: no reasoning, no commentary, and no
-    second call.
+    Whether nothing but the template's call syntax follows the tool call that ends at
+    `end`. Reasoning may come before a call, as chat templates allow, but no commentary
+    and no second call may follow it.
     """
-    return not TOOL_CALL_SYNTAX.sub("", text[:start] + text[end:])
+    return not TOOL_CALL_SYNTAX.sub("", text[end:])
 
 
 def get_split_slice(split_str: str, length: int) -> tuple[int, int]:

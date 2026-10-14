@@ -21,9 +21,9 @@ from heretic.judge import get_provider_preferences, raise_if_permanent
 from heretic.scorer import Context, Score, Scorer
 from heretic.utils import (
     Prompt,
+    ends_with_call,
     find_xml_calls,
     format_dataset_specification,
-    is_bare_call,
     print,
 )
 
@@ -59,21 +59,24 @@ ANSWER_PATTERN = re.compile(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 def get_submitted_answer(text: str, syntax: str = "json") -> str | None:
     """
-    Returns the answer argument of the submit_answer call that the text consists of, or
-    None if the text has no such call or anything besides it, apart from the template's
-    call syntax. In the "xml" syntax, the call is a <function=...> block; in the "json"
-    syntax, it is located loosely, so that it is found in any chat template's JSON call
-    syntax. Either way, a call cut off by the response length limit counts.
+    Returns the answer argument of the last submit_answer call in the text, or None if
+    there is none, anything but the template's call syntax follows it, or it has
+    arguments besides the answer. Reasoning may come before the call. In the "xml" syntax,
+    the call is a <function=...> block; in the "json" syntax, it is located loosely, so that
+    it is found in any chat template's JSON call syntax. Either way, a call cut off by the
+    response length limit counts.
     """
     if syntax == "xml":
         calls = [call for call in find_xml_calls(text) if call[2] == ANSWER_TOOL_NAME]
         if not calls:
             return None
-        start, end, _, arguments = calls[0]
-        if "answer" not in arguments or not is_bare_call(text, start, end):
+        _, end, _, arguments = calls[-1]
+        if set(arguments) != {"answer"} or not ends_with_call(text, end):
             return None
         return arguments["answer"]
 
+    # The first mention, as the answer itself may mention the tool; a mention in reasoning
+    # before the call is harmless, since the call's arguments are found after it.
     start = text.find(ANSWER_TOOL_NAME)
     match = None if start < 0 else ANSWER_PATTERN.search(text, start)
     if match is None:
@@ -83,10 +86,10 @@ def get_submitted_answer(text: str, syntax: str = "json") -> str | None:
         return None
     # The call ends with its arguments object, or with the text if it was cut off.
     try:
-        _, end = json.JSONDecoder(strict=False).raw_decode(text, brace)
+        arguments, end = json.JSONDecoder(strict=False).raw_decode(text, brace)
     except ValueError:
-        end = len(text)
-    if not is_bare_call(text, start, end):
+        arguments, end = {"answer": None}, len(text)
+    if set(arguments) != {"answer"} or not ends_with_call(text, end):
         return None
     try:
         return json.loads(f'"{match.group(1)}"', strict=False)
