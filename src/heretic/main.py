@@ -584,9 +584,11 @@ def run():
             else:
                 print("* None found")
 
-        if cot_skip_applied:
-            # When using a Chain-of-Thought skip, we need to check that the prefix
-            # is actually complete (e.g. not missing a trailing newline).
+        # When using a Chain-of-Thought skip, we need to check that the prefix
+        # is actually complete (e.g. not missing a trailing newline). In thinking mode,
+        # the prefix ends inside the open thinking block, where what follows is the
+        # model's own thinking rather than part of the template, so it is not extended.
+        if cot_skip_applied and not settings.thinking:
             print("* Rechecking with prefix...")
             responses = model.get_responses_batched(response_prefix_test_prompts)
             additional_prefix = commonprefix(responses).rstrip(" ")
