@@ -427,8 +427,8 @@ class Settings(BaseSettings):
             '"none" (no judge), '
             '"shieldstral" (local classifier downloaded from Hugging Face), '
             '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable; '
-            "a model that can reason judges at low reasoning effort and confirms each degenerate verdict at high "
-            "effort before the rollout is retired)."
+            "a model that can reason judges at low reasoning effort and, before a rollout is retired, judges it "
+            "again at high effort, told of the first verdict and of what retiring the rollout costs)."
         ),
     )
 

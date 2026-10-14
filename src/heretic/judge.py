@@ -235,12 +235,24 @@ class OpenRouterJudge(Judge):
         self.provider = get_provider_preferences(
             self.client, settings.openrouter_model, settings.openrouter_provider
         )
+        consequence = (
+            "the whole trial, the evaluation of this version of the model on all of its "
+            "requests, is cancelled"
+            if settings.abort_trial_on_retirement
+            else "it counts as a failed answer"
+        )
+        self.confirmation_note = (
+            "\n\n[Previous verdict]\nA first, quicker review judged this output degenerate. "
+            "Judge it again, carefully: if you also judge it degenerate, its generation "
+            f"stops and {consequence}."
+        )
 
     def _send(
         self,
         request: str,
         text: str,
         reasoning: components.ChatRequestReasoning | None,
+        note: str,
     ) -> components.ChatResult:
         system_prompt = self.settings.openrouter_system_prompt
         return self.client.chat.send(
@@ -256,7 +268,7 @@ class OpenRouterJudge(Judge):
                     "content": (
                         f"{self.settings.judge_criteria} {QUESTION}\n\n"
                         f"[User request]\n{request}\n\n"
-                        f"[Model output so far]\n{text}"
+                        f"[Model output so far]\n{text}{note}"
                     ),
                 },
             ],
@@ -275,9 +287,9 @@ class OpenRouterJudge(Judge):
         return float(verdict)
 
     def score(self, requests: list[str], texts: list[str]) -> list[float]:
-        verdicts = self._verdicts(requests, texts, self.reasoning)
+        verdicts = self._verdicts(requests, texts, self.reasoning, "")
         # A degenerate verdict retires the rollout and can prune the whole trial, so a judge
-        # that can reason confirms it at a higher effort first.
+        # that can reason confirms it at a higher effort first, told what is at stake.
         flagged = [
             i
             for i, verdict in enumerate(verdicts)
@@ -288,6 +300,7 @@ class OpenRouterJudge(Judge):
                 [requests[i] for i in flagged],
                 [texts[i] for i in flagged],
                 self.confirmation_reasoning,
+                self.confirmation_note,
             )
             kept = sum(verdict > self.settings.judge_threshold for verdict in confirmed)
             print(
@@ -302,6 +315,7 @@ class OpenRouterJudge(Judge):
         requests: list[str],
         texts: list[str],
         reasoning: components.ChatRequestReasoning | None,
+        note: str,
     ) -> list[float]:
         verdicts: dict[int, float] = {}
 
@@ -312,7 +326,7 @@ class OpenRouterJudge(Judge):
             # that generation waits for a single round of verdicts.
             with ThreadPoolExecutor(max_workers=len(pending)) as executor:
                 futures = [
-                    executor.submit(self._send, requests[i], texts[i], reasoning)
+                    executor.submit(self._send, requests[i], texts[i], reasoning, note)
                     for i in pending
                 ]
 
