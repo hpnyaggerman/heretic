@@ -707,39 +707,45 @@ class Model:
 
         return sorted(components)
 
-    def template_kwargs(self) -> dict[str, Any]:
-        # Passed only in thinking mode so that non-thinking prompts stay byte-identical.
-        return {"enable_thinking": True} if self.settings.thinking else {}
+    def template_kwargs(self, thinking: bool = True) -> dict[str, Any]:
+        # Passed only in thinking mode so that prompts outside it stay byte-identical.
+        return {"enable_thinking": thinking} if self.settings.thinking else {}
+
+    def _apply_template(self, prompt: Prompt, thinking: bool) -> str:
+        # This cast is valid because str is the return type
+        # for a single chat operation with tokenize=False.
+        return cast(
+            str,
+            self.tokenizer.apply_chat_template(
+                [
+                    {"role": "system", "content": prompt.system},
+                    {"role": "user", "content": prompt.user},
+                ],
+                # This cast is valid because the template only reads the list.
+                tools=cast(list[dict | Callable] | None, prompt.tools),
+                add_generation_prompt=True,
+                tokenize=False,
+                # Overrides the function that templates call to get the current date.
+                strftime_now=strftime_fixed_date,
+                **self.template_kwargs(thinking),
+            ),
+        )
 
     def _chat_prompts(self, prompts: list[Prompt]) -> list[str]:
-        chat_prompts = [
-            # This cast is valid because str is the return type
-            # for a single chat operation with tokenize=False.
-            cast(
-                str,
-                self.tokenizer.apply_chat_template(
-                    [
-                        {"role": "system", "content": prompt.system},
-                        {"role": "user", "content": prompt.user},
-                    ],
-                    # This cast is valid because the template only reads the list.
-                    tools=cast(list[dict | Callable] | None, prompt.tools),
-                    add_generation_prompt=True,
-                    tokenize=False,
-                    # Overrides the function that templates call to get the current date.
-                    strftime_now=strftime_fixed_date,
-                    **self.template_kwargs(),
-                ),
-            )
-            for prompt in prompts
-        ]
-
-        # Append the common response prefix to the prompts so that evaluation happens
-        # at the point where responses start to differ for different prompts.
-        return [
-            chat_prompt + self._response_prefix(prompt)
-            for prompt, chat_prompt in zip(prompts, chat_prompts)
-        ]
+        chat_prompts = []
+        for prompt in prompts:
+            chat_prompt = self._apply_template(prompt, prompt.thinking)
+            # A template's own non-thinking mode, if it has one, is how the model
+            # learned to answer directly, so its rendering is used as it is. Closing
+            # the block that thinking mode opened instead would keep the rest of
+            # thinking mode, such as Qwen3.8's instruction to reason carefully, which
+            # the model then follows in its answer.
+            if prompt.thinking or chat_prompt == self._apply_template(prompt, True):
+                # Append the common response prefix to the prompts so that evaluation happens
+                # at the point where responses start to differ for different prompts.
+                chat_prompt += self._response_prefix(prompt)
+            chat_prompts.append(chat_prompt)
+        return chat_prompts
 
     def _response_prefix(self, prompt: Prompt) -> str:
         prefix = self.settings.response_prefix or ""

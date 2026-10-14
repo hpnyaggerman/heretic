@@ -157,8 +157,9 @@ class Prompt:
     max_response_length: int | None = None
     max_thinking_length: int | None = None
     batch_size: int | None = None
-    # Whether the model thinks before answering in thinking mode. If not, the prompt
-    # ends with a closed thinking block and the model answers directly.
+    # Whether the model thinks before answering in thinking mode. If not, the prompt is
+    # rendered in the chat template's non-thinking mode, or ends with a closed thinking
+    # block if the template has none, and the model answers directly.
     thinking: bool = True
 
 
