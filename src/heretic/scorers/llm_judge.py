@@ -164,7 +164,7 @@ class Settings(BaseModel):
         description=(
             "OpenRouter providers that serve the judge's requests, in order of preference and "
             'with no fallback to others (e.g. ["deepinfra"]). If not set, OpenRouter chooses '
-            "the provider."
+            "the provider, excluding endpoints quantized below fp8."
         ),
     )
 
@@ -361,6 +361,9 @@ class LLMJudge(Scorer):
                 f"The judge model {self.settings.model} does not support tool calling."
             )
         self.temperature = 0.0 if "temperature" in supported else UNSET
+        self.provider = get_provider_preferences(
+            self.client, self.settings.model, self.settings.provider
+        )
 
         print()
         print(
@@ -513,7 +516,7 @@ class LLMJudge(Scorer):
                 },
             ],
             tools=[get_category_tool(categories)],
-            provider=get_provider_preferences(self.settings.provider),
+            provider=self.provider,
             temperature=self.temperature,
             stream=False,
         )

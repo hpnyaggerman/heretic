@@ -51,19 +51,49 @@ def raise_if_permanent(error: Exception) -> None:
         ) from error
 
 
+# Quantizations of fp8 or higher precision. Endpoints whose precision OpenRouter does not
+# know, among them many first-party ones, are kept.
+FP8_OR_HIGHER: list[components.Quantization] = [
+    "fp8",
+    "mxfp8",
+    "fp16",
+    "bf16",
+    "fp32",
+    "unknown",
+]
+
+
 def get_provider_preferences(
+    client: OpenRouter,
+    model: str,
     providers: list[str] | None,
 ) -> components.ProviderPreferences:
     """
     Routes OpenRouter requests to the given providers, in order and with no fallback
-    to others, or to any provider if none are given. Either way, a provider must
-    support every parameter the request uses.
+    to others. If none are given, any of the model's endpoints may serve them except
+    one quantized below fp8. Either way, a provider must support every parameter the
+    request uses.
     """
-    if providers is None:
+    if providers is not None:
+        return components.ProviderPreferences(
+            order=providers,
+            allow_fallbacks=False,
+            require_parameters=True,
+        )
+
+    author, _, slug = model.partition("/")
+    endpoints = client.endpoints.list(author=author, slug=slug).data.endpoints
+    quantizations = {endpoint.quantization or "unknown" for endpoint in endpoints}
+    if quantizations <= set(FP8_OR_HIGHER):
         return components.ProviderPreferences(require_parameters=True)
+    if not quantizations & set(FP8_OR_HIGHER):
+        raise ValueError(
+            f"Every OpenRouter endpoint of {model} is quantized below fp8, "
+            "so one can only be used by setting its provider."
+        )
+    print(f"* Endpoints of {model} quantized below fp8 are excluded")
     return components.ProviderPreferences(
-        order=providers,
-        allow_fallbacks=False,
+        quantizations=FP8_OR_HIGHER,
         require_parameters=True,
     )
 
@@ -209,6 +239,9 @@ class OpenRouterJudge(Judge):
             if model.data.reasoning is not None and "reasoning" in supported
             else None
         )
+        self.provider = get_provider_preferences(
+            self.client, settings.openrouter_model, settings.openrouter_provider
+        )
 
     def _send(self, request: str, text: str) -> components.ChatResult:
         system_prompt = self.settings.openrouter_system_prompt
@@ -230,7 +263,7 @@ class OpenRouterJudge(Judge):
                 },
             ],
             response_format=self.VERDICT,
-            provider=get_provider_preferences(self.settings.openrouter_provider),
+            provider=self.provider,
             reasoning=self.reasoning,
             temperature=self.temperature,
             stream=False,
