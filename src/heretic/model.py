@@ -11,6 +11,7 @@ from typing import Any, TypeAlias, cast
 import torch
 import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
+from rich.markup import escape
 from torch import BoolTensor, FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList
 from torch.utils.hooks import RemovableHandle
@@ -959,6 +960,25 @@ class Model:
                         f"({sum(state.retired for state in states)} retired), {tokens:,} tokens "
                         f"at {tokens / elapsed:,.0f} tokens/s, {format_duration(elapsed)}[/]"
                     )
+                    longest = sorted(
+                        (
+                            (number, state)
+                            for number, state in enumerate(states, 1)
+                            if not state.done
+                        ),
+                        key=lambda item: len(item[1].generated),
+                        reverse=True,
+                    )[:3]
+                    if longest:
+                        print(
+                            "      [grey50]* Longest running: "
+                            + ", ".join(
+                                f"#{number} ({len(state.generated):,} tokens, "
+                                f"{escape(repr(state.prompt.user[:40]))})"
+                                for number, state in longest
+                            )
+                            + "[/]"
+                        )
 
         return [self._rollout(state) for state in states]
 
