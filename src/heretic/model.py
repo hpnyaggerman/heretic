@@ -30,6 +30,7 @@ from transformers import (
     StoppingCriteriaList,
     TextStreamer,
 )
+from transformers.cache_utils import DynamicLayer
 from transformers.generation import (
     GenerateDecoderOnlyOutput,
 )
@@ -111,6 +112,60 @@ def grouped_sdpa_attention_forward(
 # copies the whole KV cache from the KV heads to every query head on each decoded token. With
 # Qwen3.5's 4 KV heads and 24 query heads, every token writes and then reads six times the cache.
 AttentionInterface.register("sdpa", grouped_sdpa_attention_forward)
+
+
+# Tokens of room a KV cache layer gains whenever it runs out.
+KV_CACHE_GROWTH = 4096
+
+
+def update_kv_cache_layer(
+    self: DynamicLayer,
+    key_states: Tensor,
+    value_states: Tensor,
+    *args: Any,
+    **kwargs: Any,
+) -> tuple[Tensor, Tensor]:
+    """
+    transformers' DynamicLayer.update, except that the states are written into buffers with
+    room to spare, of which the cache holds views, instead of being concatenated to copies of
+    the whole cache.
+    """
+    if not self.is_initialized:
+        self.lazy_initialization(key_states, value_states)
+    old_keys, old_values = cast(Tensor, self.keys), cast(Tensor, self.values)
+
+    length = self.get_seq_length()
+    end = length + key_states.shape[-2]
+    buffers = self.__dict__.get("_buffers")
+    # Anything that replaced the states, such as selecting rows, left them outside the buffers.
+    if (
+        buffers is None
+        or buffers[0].shape[-2] < end
+        or buffers[0].shape[:-2] != key_states.shape[:-2]
+        or (length > 0 and old_keys.data_ptr() != buffers[0].data_ptr())
+    ):
+        buffers = tuple(
+            states.new_empty(
+                (*states.shape[:-2], end + KV_CACHE_GROWTH, states.shape[-1])
+            )
+            for states in (key_states, value_states)
+        )
+        if length > 0:
+            buffers[0][..., :length, :] = old_keys
+            buffers[1][..., :length, :] = old_values
+        self.__dict__["_buffers"] = buffers
+
+    keys, values = buffers
+    keys[..., length:end, :] = key_states
+    values[..., length:end, :] = value_states
+    self.keys = keys[..., :end, :]
+    self.values = values[..., :end, :]
+    return self.keys, self.values
+
+
+# Concatenating copies the whole cache on every decoded token, which at long contexts costs
+# about as much memory traffic as reading the cache for attention.
+DynamicLayer.update = update_kv_cache_layer
 
 
 # gpt-oss (harmony) answers on the final channel but makes tool calls on the commentary
