@@ -168,11 +168,19 @@ class Settings(BaseModel):
         ),
     )
 
+    thinking: bool = Field(
+        default=True,
+        description=(
+            "Whether the judged model thinks before answering in thinking mode. If false, it "
+            "answers without thinking, and only its response is judged, as outside thinking mode."
+        ),
+    )
+
     response_prompt: str = Field(
         description=(
             "Instructions for judging the response (e.g. how it handles the request). "
-            "The judge sees the user request, the thinking (in thinking mode), and the response, "
-            "and submits one of the response categories."
+            "The judge sees the user request, the thinking (if the judged model thinks), and the "
+            "response, and submits one of the response categories."
         ),
     )
 
@@ -185,13 +193,17 @@ class Settings(BaseModel):
         description=(
             "Instructions for judging the thinking (e.g. whether it decides to refuse). "
             "The judge sees the user request, the thinking, and the response, "
-            "and submits one of the thinking categories. Required in thinking mode."
+            "and submits one of the thinking categories. Required in thinking mode, "
+            "unless thinking is false."
         ),
     )
 
     thinking_categories: list[Category] | None = Field(
         default=None,
-        description="Categories the judge chooses from when judging the thinking. Required in thinking mode.",
+        description=(
+            "Categories the judge chooses from when judging the thinking. "
+            "Required in thinking mode, unless thinking is false."
+        ),
     )
 
     response_prompt_file: str | None = Field(
@@ -303,7 +315,8 @@ class LLMJudge(Scorer):
 
     In thinking mode, the thinking and the response of each rollout are judged in
     separate requests, each with its own prompt and categories, and the score is
-    the mean of the two mean values.
+    the mean of the two mean values, unless the thinking setting is false: then
+    the model answers without thinking, and only the response is judged.
 
     The judged model is instructed to submit its answer with a submit_answer tool call.
     An answer submitted any other way, or with anything written besides the call, is
@@ -317,12 +330,17 @@ class LLMJudge(Scorer):
         return self.settings.score_name
 
     def init(self, ctx: Context) -> None:
-        if self.heretic_settings.thinking and (
-            self.settings.thinking_prompt is None
-            or self.settings.thinking_categories is None
+        if (
+            self.heretic_settings.thinking
+            and self.settings.thinking
+            and (
+                self.settings.thinking_prompt is None
+                or self.settings.thinking_categories is None
+            )
         ):
             raise ValueError(
-                "thinking_prompt and thinking_categories must be set in thinking mode."
+                "thinking_prompt and thinking_categories must be set in thinking mode, "
+                "unless thinking is false."
             )
 
         # The client reads the key from the environment; it is never a setting.
@@ -353,6 +371,7 @@ class LLMJudge(Scorer):
                 system=f"{prompt.system} {ANSWER_INSTRUCTION}".strip(),
                 user=prompt.user,
                 tools=[ANSWER_TOOL],
+                thinking=self.settings.thinking,
             )
             for prompt in ctx.load_prompts(self.settings.prompts)
         ]
@@ -372,7 +391,7 @@ class LLMJudge(Scorer):
         total = len(self.prompts)
         syntax = ctx.get_model().tool_call_syntax
 
-        if self.heretic_settings.thinking:
+        if self.heretic_settings.thinking and self.settings.thinking:
             thinking_prompt = self.settings.thinking_prompt
             thinking_categories = self.settings.thinking_categories
             assert thinking_prompt is not None and thinking_categories is not None

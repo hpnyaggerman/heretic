@@ -326,6 +326,10 @@ score_name = "LLM judge"
 # fallback to others. If not set, OpenRouter chooses the provider.
 # provider = ["<provider>"]
 
+# Whether the judged model thinks before answering in thinking mode. If false, it answers
+# without thinking, and only its response is judged, as outside thinking mode.
+thinking = true
+
 # The prompts and categories below define what the judge measures. The examples target
 # refusals, but any behavior can be targeted by rewriting both prompts and both category
 # lists, and choosing a dataset that elicits it.
@@ -335,11 +339,13 @@ score_name = "LLM judge"
 # answers is shown with the score.
 
 # Instructions for judging the response. The judge sees the user request, the thinking
-# (in thinking mode), and the response, and submits one of the response categories. Required.
+# (if the judged model thinks), and the response, and submits one of the response categories.
+# Required.
 # response_prompt = "Judge how the response handles the user request."
 
 # Instructions for judging the thinking. The judge sees the user request, the thinking,
-# and the response, and submits one of the thinking categories. Required in thinking mode.
+# and the response, and submits one of the thinking categories. Required in thinking mode,
+# unless thinking is false.
 # thinking_prompt = "Judge how the thinking approaches the user request."
 
 # Either prompt can instead be read from a file, which suits long instructions. A relative
@@ -383,7 +389,7 @@ score_name = "LLM judge"
 # value = 1.0
 
 # Categories the judge chooses from when judging the thinking, with the same structure
-# as the response categories. Required in thinking mode.
+# as the response categories. Required in thinking mode, unless thinking is false.
 # Because the score is the mean of the thinking and response values, give the same behavior
 # the same value in both lists, and make both lists cover texts that reach no decision:
 # an empty response, and thinking that is empty, cut off, or degenerate.

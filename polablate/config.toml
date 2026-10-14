@@ -67,10 +67,9 @@ Answer with a JSON object whose only field, degenerate, is true if the output so
 
 # Scorers run in this order, so a broken model is caught as cheaply as possible: the canary's
 # hard reasoning exposes damage soonest and is graded without judge calls, and the stories,
-# the longest outputs with the most expensive judge calls, come last. The weight disturbance
-# is computed from the trial's adapters alone, at no cost, and puts a known label on changes
-# that none of the other scorers measure. CogToM's short answers, given without thinking,
-# follow the canary.
+# with the most expensive judge calls, come last. The weight disturbance is computed from the
+# trial's adapters alone, at no cost, and puts a known label on changes that none of the other
+# scorers measure. CogToM's short answers, given without thinking, follow the canary.
 scorers = [
     { plugin = "heretic.scorers.weight_disturbance.WeightDisturbance", optimization = "minimize" },
     { plugin = "heretic.scorers.quality_canary.QualityCanary", optimization = "minimize" },
@@ -104,6 +103,10 @@ batch_size = 128
 
 [scorer.LLMJudge_story]
 score_name = "Consensus conformity"
+
+# The writer answers without thinking, because Qwen3.8 thinks for up to 30,000 tokens before
+# writing a story. The thinking prompt and categories below are used only if this is true.
+thinking = false
 
 # The study's judge instructions, adapted to this scorer, for both the story and the thinking.
 response_prompt_file = "judge.md"
