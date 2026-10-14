@@ -383,6 +383,15 @@ class Settings(BaseSettings):
         ),
     )
 
+    tool_call_syntax: Literal["auto", "json", "xml"] = Field(
+        default="auto",
+        description=(
+            'Syntax in which the model writes tool calls, for the scorers that parse them: "json" '
+            'for arguments as a JSON object, as in most chat templates; "xml" for <parameter=name> '
+            'blocks inside <function=name>, as in Qwen3.5\'s; or "auto" to detect it from the chat template.'
+        ),
+    )
+
     max_thinking_length: PositiveInt = Field(
         default=4096,
         description="Maximum number of thinking tokens per response before the thinking block is closed by force.",

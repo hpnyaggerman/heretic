@@ -54,6 +54,27 @@ def get_model_class(
         return AutoModelForCausalLM
 
 
+def detect_tool_call_syntax(tokenizer: PreTrainedTokenizerBase) -> str:
+    """
+    "xml" if the chat template writes a tool call's arguments as <parameter=name> blocks,
+    as Qwen3.5's does, and "json" otherwise, including for templates without tool calls.
+    """
+    call = {
+        "type": "function",
+        "function": {"name": "probe", "arguments": {"value": "1"}},
+    }
+    messages = [
+        {"role": "user", "content": "x"},
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+    ]
+    try:
+        # The declared message type has no room for tool calls, which templates do read.
+        text = tokenizer.apply_chat_template(cast(Any, messages), tokenize=False)
+    except Exception:
+        return "json"
+    return "xml" if "<parameter=value>" in str(text) else "json"
+
+
 # Some chat templates (e.g. gpt-oss) insert the current date into the prompt,
 # which makes the residuals, and therefore the modified model, depend on the day
 # Heretic is run. Rendering templates with a fixed date keeps results reproducible.
@@ -322,6 +343,13 @@ class Model:
         #           Right-padding causes empty outputs because the model sees PAD tokens
         #           after the prompt and thinks the sequence is complete.
         self.tokenizer.padding_side = "left"
+
+        self.tool_call_syntax = (
+            detect_tool_call_syntax(self.tokenizer)
+            if settings.tool_call_syntax == "auto"
+            else settings.tool_call_syntax
+        )
+        print(f"* Tool call syntax: [bold]{self.tool_call_syntax}[/]")
 
         self.model = None
         self.max_memory = (

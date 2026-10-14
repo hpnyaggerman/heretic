@@ -101,16 +101,18 @@ def parse_value(value: str) -> Any:
     return value
 
 
-def get_call(text: str, bare: bool) -> tuple[str, Any] | None:
+def get_call(text: str, bare: bool, syntax: str = "json") -> tuple[str, Any] | None:
     """
     Returns the name and arguments of the last call to either tool in the text, or None.
-    Calls in Qwen3.5's <function=...> syntax are read as such; otherwise the arguments
-    are the first JSON object after the tool's name, which locates them in the other
+    In the "xml" syntax, calls are read as <function=...> blocks; in the "json" syntax, the
+    arguments are the first JSON object after the tool's name, which locates them in the
     usual chat template call syntaxes. If `bare` is set, the text must consist of nothing
     but the call, apart from the template's call syntax.
     """
-    calls = [call for call in find_xml_calls(text) if call[2] in (SUBMIT, ABSTAIN)]
-    if calls:
+    if syntax == "xml":
+        calls = [call for call in find_xml_calls(text) if call[2] in (SUBMIT, ABSTAIN)]
+        if not calls:
+            return None
         start, end, name, arguments = calls[-1]
         if bare and not is_bare_call(text, start, end):
             return None
@@ -258,8 +260,9 @@ class QualityCanary(Scorer):
         else:
             responses = ctx.get_responses(self.prompts)
 
+        syntax = ctx.get_model().tool_call_syntax
         calls = [
-            get_call(response, bare=self.heretic_settings.thinking)
+            get_call(response, bare=self.heretic_settings.thinking, syntax=syntax)
             for response in responses
         ]
         total = len(self.questions)

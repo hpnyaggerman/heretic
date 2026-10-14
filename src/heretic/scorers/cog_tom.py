@@ -99,8 +99,9 @@ class CogToM(Scorer):
         ]
 
     def get_score(self, ctx: Context) -> Score:
+        syntax = ctx.get_model().tool_call_syntax
         answers = [
-            get_submitted_answer(response)
+            get_submitted_answer(response, syntax)
             for response in ctx.get_responses(self.prompts)
         ]
         # The response must be the tool call alone, and the answer the letter alone.

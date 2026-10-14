@@ -57,15 +57,18 @@ ANSWER_TOOL = {
 ANSWER_PATTERN = re.compile(r'"answer"\s*:\s*"((?:[^"\\]|\\.)*)')
 
 
-def get_submitted_answer(text: str) -> str | None:
+def get_submitted_answer(text: str, syntax: str = "json") -> str | None:
     """
     Returns the answer argument of the submit_answer call that the text consists of, or
     None if the text has no such call or anything besides it, apart from the template's
-    call syntax. The call is located loosely, so that it is found in any chat template's
-    tool call syntax, including a call cut off by the response length limit.
+    call syntax. In the "xml" syntax, the call is a <function=...> block; in the "json"
+    syntax, it is located loosely, so that it is found in any chat template's JSON call
+    syntax. Either way, a call cut off by the response length limit counts.
     """
-    calls = [call for call in find_xml_calls(text) if call[2] == ANSWER_TOOL_NAME]
-    if calls:
+    if syntax == "xml":
+        calls = [call for call in find_xml_calls(text) if call[2] == ANSWER_TOOL_NAME]
+        if not calls:
+            return None
         start, end, _, arguments = calls[0]
         if "answer" not in arguments or not is_bare_call(text, start, end):
             return None
@@ -364,6 +367,7 @@ class LLMJudge(Scorer):
 
     def get_score(self, ctx: Context) -> Score:
         total = len(self.prompts)
+        syntax = ctx.get_model().tool_call_syntax
 
         if self.heretic_settings.thinking:
             thinking_prompt = self.settings.thinking_prompt
@@ -372,7 +376,9 @@ class LLMJudge(Scorer):
 
             rollouts = ctx.get_rollouts(self.prompts)
             # An answer not submitted with the tool counts as no answer.
-            answers = [get_submitted_answer(rollout.answer) for rollout in rollouts]
+            answers = [
+                get_submitted_answer(rollout.answer, syntax) for rollout in rollouts
+            ]
             missing = sum(answer is None for answer in answers)
             transcripts = [
                 f"[User request]\n{prompt.user}\n\n"
@@ -401,7 +407,7 @@ class LLMJudge(Scorer):
             )
 
         answers = [
-            get_submitted_answer(response)
+            get_submitted_answer(response, syntax)
             for response in ctx.get_responses(self.prompts)
         ]
         missing = sum(answer is None for answer in answers)
