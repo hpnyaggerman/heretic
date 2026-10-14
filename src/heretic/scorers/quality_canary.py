@@ -59,6 +59,11 @@ class Settings(BaseModel):
         description="Maximum number of thinking tokens for each answer in thinking mode.",
     )
 
+    excluded_questions: list[str] = Field(
+        default_factory=list,
+        description='Ids of questions to leave out, such as "Q5a" (the ids are in quality_canary.json).',
+    )
+
 
 def get_submit_tool(question: dict[str, Any]) -> dict[str, Any]:
     properties = {}
@@ -183,10 +188,10 @@ def is_passed(question: dict[str, Any], call: tuple[str, Any] | None) -> bool:
 
 class QualityCanary(Scorer):
     """
-    Fraction of 20 applied-reasoning questions the model fails. Each question needs
-    domain knowledge the prompt does not supply, and the model must answer it by calling
-    a tool with typed fields, or a second tool if the question cannot be answered as
-    stated (three of them cannot). A question is passed when the right tool is called
+    Fraction of 20 applied-reasoning questions, less any excluded in the settings, that
+    the model fails. Each question needs domain knowledge the prompt does not supply, and
+    the model must answer it by calling a tool with typed fields, or a second tool if the
+    question cannot be answered as stated (three of the 20 cannot). A question is passed when the right tool is called
     and its graded fields match the answer keys.
 
     The questions come from the lora_canary suite; their keys are computed in that suite.
@@ -206,9 +211,18 @@ class QualityCanary(Scorer):
         return True
 
     def init(self, ctx: Context) -> None:
-        self.questions = json.loads(
+        questions = json.loads(
             Path(__file__).with_suffix(".json").read_text(encoding="utf-8")
         )
+        excluded = set(self.settings.excluded_questions)
+        unknown = excluded - {question["id"] for question in questions}
+        if unknown:
+            raise ValueError(
+                f"Unknown quality canary question ids: {', '.join(sorted(unknown))}"
+            )
+        self.questions = [
+            question for question in questions if question["id"] not in excluded
+        ]
         self.prompts = [
             Prompt(
                 system=SYSTEM_PROMPT,
