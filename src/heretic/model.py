@@ -10,7 +10,7 @@ from typing import Any, TypeAlias, cast
 
 import torch
 from peft import LoraConfig, PeftModel, get_peft_model
-from torch import FloatTensor, LongTensor, Tensor
+from torch import BoolTensor, FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList
 from torch.utils.hooks import RemovableHandle
 from transformers import (
@@ -24,6 +24,8 @@ from transformers import (
     PreTrainedModel,
     PreTrainedTokenizerBase,
     ProcessorMixin,
+    StoppingCriteria,
+    StoppingCriteriaList,
     TextStreamer,
 )
 from transformers.generation import (
@@ -104,6 +106,42 @@ class _RolloutState:
             return limit - len(self.generated)
         limit = self.prompt.max_response_length or settings.max_response_length
         return self.closer_end + limit - len(self.generated)
+
+
+GENERATION_PROGRESS_INTERVAL = 1024
+
+
+class _GenerationProgress(StoppingCriteria):
+    """Never stops generation; prints every `interval` tokens how far a generate call has got."""
+
+    def __init__(self, prompt_length: int, end_ids: list[int], interval: int):
+        self.prompt_length = prompt_length
+        self.end_ids = end_ids
+        self.interval = interval
+        self.start_time = time.perf_counter()
+
+    def __call__(
+        self,
+        input_ids: LongTensor,
+        scores: tuple[FloatTensor] | None,
+        **kwargs: Any,
+    ) -> BoolTensor:
+        length = input_ids.shape[1] - self.prompt_length
+        if length % self.interval == 0:
+            # A finished sequence ends in its stop token and, after that, in padding.
+            ended = torch.isin(
+                input_ids[:, -1],
+                torch.tensor(self.end_ids, device=input_ids.device),
+            )
+            elapsed = time.perf_counter() - self.start_time
+            print(
+                f"      [grey50]* {length:,} tokens, {int((~ended).sum())}/{len(ended)} still generating, "
+                f"{length / elapsed:.1f} tokens/s per sequence, {format_duration(elapsed)}[/]"
+            )
+        return cast(
+            BoolTensor,
+            torch.zeros(input_ids.shape[0], dtype=torch.bool, device=input_ids.device),
+        )
 
 
 class Model:
@@ -611,6 +649,21 @@ class Model:
             padding=True,
             return_tensors="pt",
         ).to(self.model.device)
+        prompt_length = inputs["input_ids"].shape[1]
+
+        pad_id = self.tokenizer.pad_token_id
+        # A call no longer than one interval would only report at its end.
+        progress = (
+            [
+                _GenerationProgress(
+                    prompt_length,
+                    stop_ids + ([] if pad_id is None else [pad_id]),
+                    GENERATION_PROGRESS_INTERVAL,
+                )
+            ]
+            if max_new_tokens > GENERATION_PROGRESS_INTERVAL
+            else []
+        )
 
         # Reseeding makes each rollout independent of what was generated before it.
         torch.manual_seed(self.settings.seed)
@@ -618,14 +671,14 @@ class Model:
             **inputs,
             max_new_tokens=max_new_tokens,
             eos_token_id=stop_ids,
-            pad_token_id=self.tokenizer.pad_token_id,
+            pad_token_id=pad_id,
             stop_strings=[stop_string] if stop_string else None,
             tokenizer=self.tokenizer,
+            stopping_criteria=StoppingCriteriaList(progress),
             **self.sampling_kwargs(),
         )  # ty:ignore[call-non-callable]
 
         results = []
-        prompt_length = inputs["input_ids"].shape[1]
         for row in cast(Tensor, outputs)[:, prompt_length:].tolist():
             # Padding only follows a stop token, so the first one is the true end.
             stop = next((token for token in row if token in stop_ids), None)

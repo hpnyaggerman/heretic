@@ -23,6 +23,12 @@ max_thinking_length = 65536
 # skips the automatic batch size search.
 batch_size = 10
 
+# Each answer, and each restart after a judged chunk, first reads the whole padded batch of
+# prompts and thinking. Read at once, a batch of thinking near max_thinking_length needs
+# hundreds of GiB for its attention mask and activations; read in pieces of 2048 tokens, it
+# fits beside the cache, with the same result up to rounding.
+thinking_generation_kwargs = { prefill_chunk_size = 2048 }
+
 # Retire rollouts that loop or otherwise degenerate, judged every thinking_chunk_size tokens
 # of the thinking and of the answer. The unmodified model's rollouts are not judged.
 thinking_judge = "openrouter"
