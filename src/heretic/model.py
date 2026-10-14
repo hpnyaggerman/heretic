@@ -203,8 +203,8 @@ class RolloutRetired(Exception):
 class _Run:
     """
     The padded sequences, attention mask and cache after a generate call. The next call
-    on the rollouts that are still in the same part continues from them instead of
-    reading their whole sequences again.
+    on the rollouts that kept every token of it continues from them instead of reading
+    their whole sequences again.
     """
 
     sequences: Tensor
@@ -887,7 +887,16 @@ class Model:
         stop_ids = (
             list(eos) if isinstance(eos, list) else ([] if eos is None else [eos])
         )
-        if stop_id is not None:
+        # A thinking block closed by a dedicated token, which the closer only follows with
+        # whitespace, is left open to the model: a rollout that closes it goes on with its
+        # answer in the same call, sharing the batch and its cache, instead of stopping
+        # there and having its whole sequence read again for the answer.
+        in_stream = (
+            stop_id is not None
+            # decode returns a string for a flat list of ids.
+            and not cast(str, self.tokenizer.decode(closer_ids[1:])).strip()
+        )
+        if stop_id is not None and not in_stream:
             stop_ids.append(stop_id)
 
         states = [
@@ -909,14 +918,23 @@ class Model:
 
         start_time = time.perf_counter()
         while active := [state for state in states if not state.done]:
-            thinking = [state for state in active if state.closer_end is None]
-            answering = [state for state in active if state.closer_end is not None]
-            groups = [(thinking, True), (answering, True)]
+            # Rollouts that closed their thinking within a run answer in it.
+            running = [
+                state
+                for state in active
+                if state.closer_end is None or state.run is not None
+            ]
+            answering = [
+                state
+                for state in active
+                if state.closer_end is not None and state.run is None
+            ]
+            groups = [(running, True), (answering, True)]
             if settings.judge_first_chunk_only:
                 # Rollouts that passed the first-chunk gate think to the end in one call.
                 groups = [
-                    ([state for state in thinking if state.judged_length == 0], True),
-                    ([state for state in thinking if state.judged_length > 0], False),
+                    ([state for state in running if state.judged_length == 0], True),
+                    ([state for state in running if state.judged_length > 0], False),
                     (answering, True),
                 ]
             for group, chunked in groups:
@@ -967,7 +985,9 @@ class Model:
     ):
         settings = self.settings
         max_new_tokens = max(state.remaining(settings) for state in batch)
-        if judge is not None and chunked:
+        # Without a judge, chunks only serve to drop finished rollouts between calls, which
+        # pays off only when the cache carries over.
+        if chunked and (judge is not None or continuable):
             max_new_tokens = min(max_new_tokens, settings.thinking_chunk_size)
 
         # A run's cache can only be continued by a batch of all the rollouts that continue it.
@@ -976,7 +996,6 @@ class Model:
             run.rollouts != len(batch) or any(state.run is not run for state in batch)
         ):
             run = None
-        thinking = [state.closer_end is None for state in batch]
         results, next_run = self.generate_ids(
             [state.prompt_ids + state.generated for state in batch],
             max_new_tokens,
@@ -987,10 +1006,30 @@ class Model:
         for state in batch:
             state.run = None
 
+        in_stream = stop_id is not None and stop_id not in stop_ids
+        continuing = []
         for state, (new_ids, stop) in zip(batch, results):
+            # Whether the rollout keeps every token of the call unchanged, so that its
+            # row of the call's output remains its sequence.
+            kept = stop is None and len(new_ids) == max_new_tokens
+
+            if (
+                in_stream
+                and state.closer_end is None
+                and stop_id in new_ids[: state.remaining(settings) + 1]
+            ):
+                end = new_ids.index(stop_id) + 1
+                state.generated.extend(new_ids[:end])
+                state.closer_length = 1
+                state.closer_end = len(state.generated)
+                new_ids = new_ids[end:]
+            if in_stream and state.closer_end is not None and stop_id in new_ids:
+                new_ids, stop = new_ids[: new_ids.index(stop_id)], stop_id
+
             budget = state.remaining(settings)
             if len(new_ids) > budget:
                 new_ids, stop = new_ids[:budget], None
+                kept = False
             state.generated.extend(new_ids)
 
             closed = stop is not None and stop == stop_id
@@ -1000,6 +1039,7 @@ class Model:
                 if start is not None:
                     del state.generated[offset + start :]
                     closed = True
+                    kept = False
 
             if state.closer_end is None:
                 if closed or state.remaining(settings) <= 0:
@@ -1007,16 +1047,16 @@ class Model:
                     state.generated.extend(closer)
                     state.closer_length = len(closer)
                     state.closer_end = len(state.generated)
+                    kept = False
                 elif stop is not None:
                     state.done = True
             elif closed or stop is not None or state.remaining(settings) <= 0:
                 state.done = True
+            continuing.append(kept and not state.done)
 
-        # A rollout still in the same part generated exactly the call's tokens, so its
-        # row of the call's output is its sequence.
         if continuable:
-            for row, (state, was_thinking) in enumerate(zip(batch, thinking)):
-                if not state.done and (state.closer_end is None) == was_thinking:
+            for row, (state, continues) in enumerate(zip(batch, continuing)):
+                if continues:
                     state.run, state.row = next_run, row
                     next_run.rollouts += 1
 
