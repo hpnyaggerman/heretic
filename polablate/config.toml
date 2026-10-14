@@ -27,6 +27,10 @@ batch_size = 10
 # of the thinking and of the answer. The unmodified model's rollouts are not judged.
 thinking_judge = "openrouter"
 
+# Generation pauses for the judge after each chunk and restarts on the whole sequence, so
+# larger chunks waste less time on a fast model, at the cost of catching a loop a little later.
+thinking_chunk_size = 1024
+
 # A trial with a retired rollout is aborted on the spot and marked as pruned, which the
 # optimizer counts as a bad result, instead of evaluating a broken model to the end.
 abort_trial_on_retirement = true
