@@ -45,8 +45,8 @@ abort_trial_on_retirement = true
 # openrouter_model = "<provider>/<model>"
 
 # OpenRouter providers that serve that judge's requests, in order of preference and with no
-# fallback to others. If not set, OpenRouter chooses the provider, excluding endpoints
-# quantized below fp8.
+# fallback to others. If not set, OpenRouter chooses among the endpoints known to be at fp8 or
+# higher precision.
 # openrouter_provider = ["<provider>"]
 
 # What that judge counts as degenerate. It opens the judge's user message, followed by the
@@ -98,8 +98,8 @@ batch_size = 128
 # model = "<provider>/<model>"
 
 # OpenRouter providers that serve the judges' requests, in order of preference and with no
-# fallback to others. If not set, OpenRouter chooses the provider, excluding endpoints
-# quantized below fp8. An instance section can set its own.
+# fallback to others. If not set, OpenRouter chooses among the endpoints known to be at fp8 or
+# higher precision. An instance section can set its own.
 # provider = ["<provider>"]
 
 [scorer.LLMJudge_story]

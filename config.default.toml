@@ -120,8 +120,8 @@ abort_trial_on_retirement = false
 # openrouter_model = "<provider>/<model>"
 
 # OpenRouter providers that serve the requests when thinking_judge is "openrouter", in order
-# of preference and with no fallback to others. If not set, OpenRouter chooses the provider,
-# excluding endpoints quantized below fp8.
+# of preference and with no fallback to others. If not set, OpenRouter chooses among the
+# endpoints known to be at fp8 or higher precision.
 # openrouter_provider = ["<provider>"]
 
 # System prompt of the judge when thinking_judge is "openrouter". If not set, the judge gets no
@@ -324,8 +324,8 @@ score_name = "LLM judge"
 # model = "<provider>/<model>"
 
 # OpenRouter providers that serve the judge's requests, in order of preference and with no
-# fallback to others. If not set, OpenRouter chooses the provider, excluding endpoints
-# quantized below fp8.
+# fallback to others. If not set, OpenRouter chooses among the endpoints known to be at fp8 or
+# higher precision.
 # provider = ["<provider>"]
 
 # Whether the judged model thinks before answering in thinking mode. If false, it answers

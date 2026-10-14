@@ -470,7 +470,7 @@ class Settings(BaseSettings):
         description=(
             'OpenRouter providers that serve the requests when thinking_judge is "openrouter", '
             'in order of preference and with no fallback to others (e.g. ["deepinfra"]). '
-            "If not set, OpenRouter chooses the provider, excluding endpoints quantized below fp8."
+            "If not set, OpenRouter chooses among the endpoints known to be at fp8 or higher precision."
         ),
     )
 

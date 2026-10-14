@@ -164,7 +164,7 @@ class Settings(BaseModel):
         description=(
             "OpenRouter providers that serve the judge's requests, in order of preference and "
             'with no fallback to others (e.g. ["deepinfra"]). If not set, OpenRouter chooses '
-            "the provider, excluding endpoints quantized below fp8."
+            "among the endpoints known to be at fp8 or higher precision."
         ),
     )
 

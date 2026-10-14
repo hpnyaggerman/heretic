@@ -51,16 +51,7 @@ def raise_if_permanent(error: Exception) -> None:
         ) from error
 
 
-# Quantizations of fp8 or higher precision. Endpoints whose precision OpenRouter does not
-# know, among them many first-party ones, are kept.
-FP8_OR_HIGHER: list[components.Quantization] = [
-    "fp8",
-    "mxfp8",
-    "fp16",
-    "bf16",
-    "fp32",
-    "unknown",
-]
+FP8_OR_HIGHER: list[components.Quantization] = ["fp8", "mxfp8", "fp16", "bf16", "fp32"]
 
 
 def get_provider_preferences(
@@ -70,9 +61,9 @@ def get_provider_preferences(
 ) -> components.ProviderPreferences:
     """
     Routes OpenRouter requests to the given providers, in order and with no fallback
-    to others. If none are given, any of the model's endpoints may serve them except
-    one quantized below fp8. Either way, a provider must support every parameter the
-    request uses.
+    to others. If none are given, any of the model's endpoints known to be at fp8 or
+    higher precision may serve them. Either way, a provider must support every
+    parameter the request uses.
     """
     if providers is not None:
         return components.ProviderPreferences(
@@ -83,15 +74,15 @@ def get_provider_preferences(
 
     author, _, slug = model.partition("/")
     endpoints = client.endpoints.list(author=author, slug=slug).data.endpoints
-    quantizations = {endpoint.quantization or "unknown" for endpoint in endpoints}
+    quantizations = {endpoint.quantization for endpoint in endpoints}
     if quantizations <= set(FP8_OR_HIGHER):
         return components.ProviderPreferences(require_parameters=True)
     if not quantizations & set(FP8_OR_HIGHER):
         raise ValueError(
-            f"Every OpenRouter endpoint of {model} is quantized below fp8, "
-            "so one can only be used by setting its provider."
+            f"No OpenRouter endpoint of {model} is known to be at fp8 or higher "
+            "precision, so one can only be used by setting its provider."
         )
-    print(f"* Endpoints of {model} quantized below fp8 are excluded")
+    print(f"* Endpoints of {model} below fp8 or of unknown precision are excluded")
     return components.ProviderPreferences(
         quantizations=FP8_OR_HIGHER,
         require_parameters=True,
