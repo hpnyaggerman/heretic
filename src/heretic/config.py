@@ -426,7 +426,9 @@ class Settings(BaseSettings):
             "the unmodified model's rollouts are not judged. Options: "
             '"none" (no judge), '
             '"shieldstral" (local classifier downloaded from Hugging Face), '
-            '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable).'
+            '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable; '
+            "a model that can reason judges at low reasoning effort and confirms each degenerate verdict at high "
+            "effort before the rollout is retired)."
         ),
     )
 
