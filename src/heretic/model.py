@@ -9,11 +9,13 @@ from datetime import datetime, timezone
 from typing import Any, TypeAlias, cast
 
 import torch
+import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch import BoolTensor, FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList
 from torch.utils.hooks import RemovableHandle
 from transformers import (
+    AttentionInterface,
     AutoModelForCausalLM,
     AutoModelForImageTextToText,
     AutoProcessor,
@@ -31,6 +33,7 @@ from transformers import (
 from transformers.generation import (
     GenerateDecoderOnlyOutput,
 )
+from transformers.integrations.sdpa_attention import sdpa_attention_forward
 
 from .config import QuantizationMethod, Settings
 from .judge import Judge
@@ -54,6 +57,60 @@ def get_model_class(
 # Heretic is run. Rendering templates with a fixed date keeps results reproducible.
 def strftime_fixed_date(format: str) -> str:
     return datetime(2026, 1, 1, tzinfo=timezone.utc).strftime(format)
+
+
+def grouped_sdpa_attention_forward(
+    module: Module,
+    query: Tensor,
+    key: Tensor,
+    value: Tensor,
+    attention_mask: Tensor | None,
+    dropout: float = 0.0,
+    scaling: float | None = None,
+    is_causal: bool | None = None,
+    **kwargs: Any,
+) -> tuple[Tensor, None]:
+    """
+    transformers' SDPA attention, except that a single decoded token with an attention mask
+    reads shared KV heads directly instead of a copy of them for every query head.
+    """
+    batch, heads, length, dim = query.shape
+    groups = getattr(module, "num_key_value_groups", 1)
+    if (
+        length != 1
+        or groups == 1
+        or attention_mask is None
+        or attention_mask.shape[1] != 1
+        or kwargs.get("position_bias") is not None
+    ):
+        return sdpa_attention_forward(
+            module,
+            query,
+            key,
+            value,
+            attention_mask,
+            dropout=dropout,
+            scaling=scaling,
+            is_causal=is_causal,
+            **kwargs,
+        )
+    # Query head h reads KV head h // groups, so the query heads sharing a KV head
+    # take the place of query positions.
+    output = F.scaled_dot_product_attention(
+        query.reshape(batch, key.shape[1], groups, dim),
+        key,
+        value,
+        attn_mask=attention_mask,
+        dropout_p=dropout,
+        scale=scaling,
+    )
+    return output.reshape(batch, 1, heads, dim), None
+
+
+# A left-padded batch always has an attention mask, and with a mask, transformers' SDPA attention
+# copies the whole KV cache from the KV heads to every query head on each decoded token. With
+# Qwen3.5's 4 KV heads and 24 query heads, every token writes and then reads six times the cache.
+AttentionInterface.register("sdpa", grouped_sdpa_attention_forward)
 
 
 # gpt-oss (harmony) answers on the final channel but makes tool calls on the commentary
@@ -88,6 +145,20 @@ class RolloutRetired(Exception):
 
 
 @dataclass
+class _Run:
+    """
+    The padded sequences, attention mask and cache after a generate call. The next call
+    on the rollouts that are still in the same part continues from them instead of
+    reading their whole sequences again.
+    """
+
+    sequences: Tensor
+    attention_mask: Tensor
+    cache: Any
+    rollouts: int = 0
+
+
+@dataclass
 class _RolloutState:
     prompt: Prompt
     prompt_ids: list[int]
@@ -99,6 +170,9 @@ class _RolloutState:
     judged_length: int = 0
     done: bool = False
     retired: bool = False
+    # The run this rollout continues from, and its row there.
+    run: _Run | None = None
+    row: int = 0
 
     def remaining(self, settings: Settings) -> int:
         if self.closer_end is None:
@@ -643,13 +717,40 @@ class Model:
         max_new_tokens: int,
         stop_ids: list[int],
         stop_string: str | None,
-    ) -> list[tuple[list[int], int | None]]:
-        inputs = self.tokenizer.pad(
-            {"input_ids": sequences},
-            padding=True,
-            return_tensors="pt",
-        ).to(self.model.device)
-        prompt_length = inputs["input_ids"].shape[1]
+        continued: tuple[_Run, list[int]] | None = None,
+    ) -> tuple[list[tuple[list[int], int | None]], _Run]:
+        """
+        Generates continuations of the sequences or, given a run and the rows of the
+        sequences in it, continues them from the run's cache.
+        """
+        kwargs = self.sampling_kwargs()
+        if continued is None:
+            inputs = self.tokenizer.pad(
+                {"input_ids": sequences},
+                padding=True,
+                return_tensors="pt",
+            ).to(self.model.device)
+            input_ids = inputs["input_ids"]
+            attention_mask = inputs["attention_mask"]
+        else:
+            run, rows = continued
+            index = torch.tensor(rows, device=run.sequences.device)
+            input_ids = run.sequences[index]
+            attention_mask = run.attention_mask[index]
+            if rows != list(range(len(run.sequences))):
+                run.cache.reorder_cache(index)
+            kwargs["past_key_values"] = run.cache
+            # Only the last token is new, and transformers' chunked prefill would
+            # start over from the beginning of the sequences.
+            kwargs.pop("prefill_chunk_size", None)
+        prompt_length = input_ids.shape[1]
+        # The positions transformers would derive from the attention mask. Passed explicitly,
+        # they stay two-dimensional: transformers' chunked prefill slices the
+        # three-dimensional positions of models such as Qwen3.5 along the wrong dimension,
+        # and derives them for a continued call from offsets left by the latest call.
+        position_ids = (attention_mask.long().cumsum(-1) - 1).masked_fill(
+            attention_mask == 0, 0
+        )
 
         pad_id = self.tokenizer.pad_token_id
         # A call no longer than one interval would only report at its end.
@@ -668,23 +769,39 @@ class Model:
         # Reseeding makes each rollout independent of what was generated before it.
         torch.manual_seed(self.settings.seed)
         outputs = self.model.generate(
-            **inputs,
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            position_ids=position_ids,
             max_new_tokens=max_new_tokens,
             eos_token_id=stop_ids,
             pad_token_id=pad_id,
             stop_strings=[stop_string] if stop_string else None,
             tokenizer=self.tokenizer,
             stopping_criteria=StoppingCriteriaList(progress),
-            **self.sampling_kwargs(),
+            return_dict_in_generate=True,
+            **kwargs,
         )  # ty:ignore[call-non-callable]
+        output_ids = cast(Tensor, outputs.sequences)
 
         results = []
-        for row in cast(Tensor, outputs)[:, prompt_length:].tolist():
+        for row in output_ids[:, prompt_length:].tolist():
             # Padding only follows a stop token, so the first one is the true end.
             stop = next((token for token in row if token in stop_ids), None)
             results.append((row if stop is None else row[: row.index(stop)], stop))
 
-        return results
+        return results, _Run(
+            sequences=output_ids,
+            attention_mask=torch.cat(
+                [
+                    attention_mask,
+                    attention_mask.new_ones(
+                        (len(attention_mask), output_ids.shape[1] - prompt_length)
+                    ),
+                ],
+                dim=1,
+            ),
+            cache=outputs.past_key_values,
+        )
 
     def sampling_kwargs(self) -> dict[str, Any]:
         if self.settings.thinking_sampling == "greedy":
@@ -758,6 +875,9 @@ class Model:
                         stop_string,
                         judge,
                         chunked,
+                        # Keeping the caches of several batches between calls would
+                        # need more memory than generating them one at a time.
+                        len(group) <= batch_size,
                     )
                     elapsed = time.perf_counter() - start_time
                     tokens = sum(len(state.generated) for state in states)
@@ -788,17 +908,29 @@ class Model:
         stop_string: str | None,
         judge: Judge | None,
         chunked: bool,
+        continuable: bool,
     ):
         settings = self.settings
         max_new_tokens = max(state.remaining(settings) for state in batch)
         if judge is not None and chunked:
             max_new_tokens = min(max_new_tokens, settings.thinking_chunk_size)
-        results = self.generate_ids(
+
+        # A run's cache can only be continued by a batch of all the rollouts that continue it.
+        run = batch[0].run
+        if run is not None and (
+            run.rollouts != len(batch) or any(state.run is not run for state in batch)
+        ):
+            run = None
+        thinking = [state.closer_end is None for state in batch]
+        results, next_run = self.generate_ids(
             [state.prompt_ids + state.generated for state in batch],
             max_new_tokens,
             stop_ids,
             stop_string,
+            None if run is None else (run, [state.row for state in batch]),
         )
+        for state in batch:
+            state.run = None
 
         for state, (new_ids, stop) in zip(batch, results):
             budget = state.remaining(settings)
@@ -824,6 +956,14 @@ class Model:
                     state.done = True
             elif closed or stop is not None or state.remaining(settings) <= 0:
                 state.done = True
+
+        # A rollout still in the same part generated exactly the call's tokens, so its
+        # row of the call's output is its sequence.
+        if continuable:
+            for row, (state, was_thinking) in enumerate(zip(batch, thinking)):
+                if not state.done and (state.closer_end is None) == was_thinking:
+                    state.run, state.row = next_run, row
+                    next_run.rollouts += 1
 
         if judge is None:
             return
@@ -857,6 +997,9 @@ class Model:
                 if score > settings.judge_threshold:
                     state.done = True
                     state.retired = True
+                    if state.run is not None:
+                        state.run.rollouts -= 1
+                        state.run = None
                     if self.abort_on_retirement:
                         raise RolloutRetired(
                             state.prompt.user,

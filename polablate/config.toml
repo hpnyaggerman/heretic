@@ -21,7 +21,7 @@ max_thinking_length = 65536
 
 # Number of prompts generated at once, for every scorer that does not set its own. Setting it
 # skips the automatic batch size search.
-batch_size = 10
+batch_size = 20
 
 # Each answer, and each restart after a judged chunk, first reads the whole padded batch of
 # prompts and thinking. Read at once, a batch of thinking near max_thinking_length needs
