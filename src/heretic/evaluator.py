@@ -34,7 +34,12 @@ class Evaluator:
     settings: Settings
     model: Model
 
-    def __init__(self, settings: Settings, model: Model):
+    def __init__(
+        self,
+        settings: Settings,
+        model: Model,
+        recorded_baseline_scores: list[tuple[str, Score]] | None = None,
+    ):
         self.settings = settings
         self.model = model
         self._scorer_entries: list[ScorerEntry] = []
@@ -44,9 +49,19 @@ class Evaluator:
         print("Loading and initializing scorers...")
         self._load_and_init_scorers()
 
+        names = [entry.name for entry in self._scorer_entries]
         print()
-        print("Getting baseline scores...")
-        self.baseline_scores = self.get_baseline_scores()
+        if recorded_baseline_scores is not None and names == [
+            name for name, _ in recorded_baseline_scores
+        ]:
+            # Scoring the unmodified model again would repeat the same work at full cost.
+            print("Using the baseline scores recorded with the study...")
+            for name, score in recorded_baseline_scores:
+                print(f"  * [bold]Baseline {name}:[/] [green]{score.rich_display}[/]")
+            self.baseline_scores = recorded_baseline_scores
+        else:
+            print("Getting baseline scores...")
+            self.baseline_scores = self.get_baseline_scores()
 
     def _load_and_init_scorers(self) -> None:
         """
@@ -156,6 +171,7 @@ class Evaluator:
                 )
             except RolloutRetired as error:
                 error.scores = scores
+                error.scorer = entry.name
                 raise
         return scores
 
@@ -214,8 +230,8 @@ class Evaluator:
             records.append(
                 {
                     "name": name,
-                    "score": dict(score.__dict__),
-                    "baseline": dict(baseline.__dict__),
+                    "score": score.summary(),
+                    "baseline": baseline.summary(),
                 }
             )
         return records

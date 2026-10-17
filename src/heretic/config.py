@@ -2,7 +2,7 @@
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
 from enum import Enum
-from typing import Any, Literal, TypeAlias
+from typing import Any, ClassVar, Literal, TypeAlias
 
 from pydantic import (
     BaseModel,
@@ -423,12 +423,14 @@ class Settings(BaseSettings):
         default="none",
         description=(
             "Judge used to retire degenerate rollouts of the modified model in thinking mode; "
-            "the unmodified model's rollouts are not judged. Options: "
+            "the unmodified model's rollouts are not judged. A rollout is retired only when two "
+            "reviews in a row of its thinking, or of its answer, flag it and a careful review "
+            "confirms it; a lone flag only stays on record. Options: "
             '"none" (no judge), '
             '"shieldstral" (local classifier downloaded from Hugging Face), '
             '"openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable; '
-            "a model that can reason judges at low reasoning effort and, before a rollout is retired, judges it "
-            "again at high effort, told of the first verdict and of what retiring the rollout costs)."
+            "it is told of the earlier flags, and a model that can reason reviews at low reasoning effort "
+            "and confirms at high effort, told what retiring the rollout costs)."
         ),
     )
 
@@ -448,16 +450,18 @@ class Settings(BaseSettings):
     judge_first_chunk_only: bool = Field(
         default=False,
         description=(
-            "Whether to judge only the first thinking chunk and let rollouts that pass it "
-            "think to the end unjudged. The answer is still judged."
+            "Whether to stop judging a rollout's thinking once a review passes it, so that a "
+            "rollout whose first thinking chunk passes thinks to the end unjudged. The answer "
+            "is still judged chunk by chunk."
         ),
     )
 
     abort_trial_on_retirement: bool = Field(
         default=False,
         description=(
-            "Whether to abort a trial as soon as the judge retires one of its rollouts, "
-            "skipping the rest of the trial's evaluation. The optimizer gets the scores the "
+            "Whether to abort a trial as soon as the judge retires a second rollout of the "
+            "same scorer, skipping the rest of the trial's evaluation; a scorer's first "
+            "retired rollout counts as its worst answer. The optimizer gets the scores the "
             "trial finished and the worst value for each other objective (or the trial is "
             "pruned if one of those scorers has no value range), and the trial is never offered "
             "as a result."
@@ -643,6 +647,17 @@ class Settings(BaseSettings):
         description='Action to take in case a checkpoint exists: "continue", "restart", or unset to prompt the user.',
     )
 
+    exit_after_optimization: bool = Field(
+        default=False,
+        description=(
+            "Whether to exit when the optimization finishes, after listing the Pareto optimal trials, "
+            "instead of showing the trial selection menu, for studies that run unattended. "
+            "The trials stay in the checkpoint, so a later run can show them."
+        ),
+        # A run that continues the study decides this for itself.
+        exclude=True,
+    )
+
     trial_index: NonNegativeInt | None = Field(
         default=None,
         description="Index (in the sorted Pareto front) of the trial to use, or unset to prompt the user.",
@@ -695,6 +710,20 @@ class Settings(BaseSettings):
     # consumed via `settings.model_extra` (see `plugin.get_plugin_namespace`).
     model_config = SettingsConfigDict(extra="allow")
 
+    # Only the settings that heretic runs with read the command line, so that settings
+    # rebuilt from stored JSON, and tools that import heretic, never parse their own
+    # process's arguments.
+    _reads_command_line: ClassVar[bool] = False
+
+    @classmethod
+    def from_command_line(cls) -> "Settings":
+        """The settings from the command line, the environment and config.toml."""
+        cls._reads_command_line = True
+        try:
+            return cls()
+        finally:
+            cls._reads_command_line = False
+
     @classmethod
     def settings_customise_sources(
         cls,
@@ -704,14 +733,21 @@ class Settings(BaseSettings):
         dotenv_settings: PydanticBaseSettingsSource,
         file_secret_settings: PydanticBaseSettingsSource,
     ) -> tuple[PydanticBaseSettingsSource, ...]:
+        command_line = (
+            (
+                CliSettingsSource(
+                    settings_cls,
+                    cli_parse_args=True,
+                    cli_implicit_flags=True,
+                    cli_kebab_case=True,
+                ),
+            )
+            if cls._reads_command_line
+            else ()
+        )
         return (
             init_settings,  # Used during resume - should override *all* other sources.
-            CliSettingsSource(
-                settings_cls,
-                cli_parse_args=True,
-                cli_implicit_flags=True,
-                cli_kebab_case=True,
-            ),
+            *command_line,
             EnvSettingsSource(settings_cls, env_prefix="HERETIC_"),
             dotenv_settings,
             file_secret_settings,

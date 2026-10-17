@@ -4,13 +4,12 @@
 import math
 from typing import cast
 
-import bitsandbytes.functional as BNB_F
 import torch
 from peft.tuners.lora.layer import Linear
 from torch import Tensor
 from torch.nn import Module
 
-from heretic.model import Model
+from heretic.model import Model, get_base_weight
 from heretic.scorer import Context, Score, Scorer
 
 
@@ -29,18 +28,16 @@ def get_modules(model: Model) -> list[Module]:
 
 def get_squared_norm(module: Module) -> float:
     """Squared Frobenius norm of the module's original weight."""
-    weight = cast(Tensor, getattr(module, "base_layer", module).weight)
-    quant_state = getattr(weight, "quant_state", None)
-    if quant_state is not None:
-        weight = BNB_F.dequantize_4bit(weight.data, quant_state)
-    return torch.linalg.vector_norm(weight, dtype=torch.float32).item() ** 2
+    return torch.linalg.vector_norm(get_base_weight(module)).item() ** 2
 
 
-def get_squared_delta_norm(module: Module) -> float:
+def get_squared_delta_norm(module: Module, row_scale: Tensor | None) -> float:
     """
-    Squared Frobenius norm of the change the module's LoRA adapter makes to its weight,
-    scaling * B @ A, or 0 if the module has no adapter. The norm is computed from the
-    low-rank factors, as the trace of (B^T B)(A A^T), without forming the full matrix.
+    Squared Frobenius norm of the change the module's adapter makes to its weight W,
+    which is D = s * (W + c B A) - W with row scales s, or c B A without them, or 0 if
+    the module has no adapter. The norm is computed from the low-rank factors without
+    forming the full matrix: with M = c B A, ||M||^2 is the trace of (B^T B)(A A^T) times
+    c^2, and each row of D contributes (s - 1)^2 ||w||^2 + 2 s (s - 1) w . m + s^2 ||m||^2.
     """
     if "default" not in getattr(module, "lora_A", {}):
         return 0.0
@@ -49,7 +46,17 @@ def get_squared_delta_norm(module: Module) -> float:
     A = cast(Tensor, layer.lora_A["default"].weight).float()
     B = cast(Tensor, layer.lora_B["default"].weight).float()
     scaling = layer.scaling["default"]
-    return scaling**2 * torch.sum((B.T @ B) * (A @ A.T)).item()
+    if row_scale is None:
+        return scaling**2 * torch.sum((B.T @ B) * (A @ A.T)).item()
+
+    W = get_base_weight(module)
+    s = row_scale.float().to(W.device)
+    A, B = A.to(W.device), B.to(W.device)
+    w_squared = torch.sum(W * W, dim=1)
+    w_dot_m = scaling * torch.sum(B * (W @ A.T), dim=1)
+    m_squared = scaling**2 * torch.sum((B @ (A @ A.T)) * B, dim=1)
+    rows = (s - 1) ** 2 * w_squared + 2 * s * (s - 1) * w_dot_m + s**2 * m_squared
+    return torch.sum(rows).item()
 
 
 class WeightDisturbance(Scorer):
@@ -74,8 +81,10 @@ class WeightDisturbance(Scorer):
         ]
 
     def get_score(self, ctx: Context) -> Score:
+        model = ctx.get_model()
         squared_deltas = [
-            get_squared_delta_norm(module) for module in get_modules(ctx.get_model())
+            get_squared_delta_norm(module, model.get_row_scale(module))
+            for module in get_modules(model)
         ]
         total = 100 * math.sqrt(sum(squared_deltas) / sum(self.squared_norms))
         largest = 100 * max(

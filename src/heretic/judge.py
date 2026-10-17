@@ -7,7 +7,8 @@ import os
 import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
-from typing import cast
+from dataclasses import dataclass, field
+from typing import Any, cast
 
 import httpx
 import huggingface_hub
@@ -89,16 +90,47 @@ def get_provider_preferences(
     )
 
 
+def format_lengths(lengths: list[int]) -> str:
+    """The lengths as an English list, such as "1024, 2048 and 3072"."""
+    texts = [str(length) for length in lengths]
+    return texts[0] if len(texts) == 1 else f"{', '.join(texts[:-1])} and {texts[-1]}"
+
+
+@dataclass
+class Verdict:
+    # The probability that the text is degenerate.
+    score: float
+    # What the judge reported besides, kept with the rollout's reviews for the run log.
+    record: dict[str, Any] = field(default_factory=dict)
+
+
 class Judge(ABC):
     calls = 0
     cost = 0.0
 
     @abstractmethod
-    def score(self, requests: list[str], texts: list[str]) -> list[float]:
+    def score(
+        self, requests: list[str], texts: list[str], flags: list[list[int]]
+    ) -> list[Verdict]:
         """
-        Returns, for each item, the probability that `texts[i]` is degenerate
-        output for the user request `requests[i]`.
+        Reviews each text quickly, for the probability that `texts[i]` is degenerate output
+        for the user request `requests[i]`. `flags[i]` holds the lengths, in characters,
+        of the text when earlier reviews of the same output flagged it as degenerate.
         """
+
+    def confirm(
+        self,
+        requests: list[str],
+        texts: list[str],
+        flags: list[list[int]],
+        cancels_trial: bool,
+    ) -> list[Verdict]:
+        """
+        Reviews carefully texts that the last two reviews flagged in a row, whose `flags`
+        include the latest. A confirmed text is retired, which also cancels the whole
+        trial if `cancels_trial` is set. By default, the quick review again.
+        """
+        return self.score(requests, texts, flags)
 
     def usage(self) -> str:
         line = f"[grey50]Judge: [bold]{self.calls}[/] calls"
@@ -139,8 +171,11 @@ class ShieldstralJudge(Judge):
             dtype=torch.bfloat16,
         ).eval()
 
-    def score(self, requests: list[str], texts: list[str]) -> list[float]:
-        scores = []
+    def score(
+        self, requests: list[str], texts: list[str], flags: list[list[int]]
+    ) -> list[Verdict]:
+        # The model was trained on its prompt alone, so it is not told of earlier flags.
+        verdicts = []
 
         for request, text in zip(requests, texts):
             messages = [
@@ -181,10 +216,11 @@ class ShieldstralJudge(Judge):
                 elif token in self.NO:
                     no = max(no, logprob)
 
-            scores.append(math.exp(yes) / (math.exp(yes) + math.exp(no)))
+            probability = math.exp(yes) / (math.exp(yes) + math.exp(no))
+            verdicts.append(Verdict(probability, {"probability": probability}))
 
         self.calls += len(requests)
-        return scores
+        return verdicts
 
 
 class OpenRouterJudge(Judge):
@@ -235,16 +271,29 @@ class OpenRouterJudge(Judge):
         self.provider = get_provider_preferences(
             self.client, settings.openrouter_model, settings.openrouter_provider
         )
+
+    @staticmethod
+    def _flags_note(flags: list[int]) -> str:
+        if not flags:
+            return ""
+        return (
+            "\n\n[Previous verdicts]\nEarlier reviews judged this output degenerate when "
+            f"it was {format_lengths(flags)} characters long."
+        )
+
+    @staticmethod
+    def _confirmation_note(flags: list[int], cancels_trial: bool) -> str:
         consequence = (
             "the whole trial, the evaluation of this version of the model on all of its "
             "requests, is cancelled"
-            if settings.abort_trial_on_retirement
+            if cancels_trial
             else "it counts as a failed answer"
         )
-        self.confirmation_note = (
-            "\n\n[Previous verdict]\nA first, quicker review judged this output degenerate. "
-            "Judge it again, carefully: if you also judge it degenerate, its generation "
-            f"stops and {consequence}."
+        return (
+            "\n\n[Previous verdicts]\nQuicker reviews judged this output degenerate when "
+            f"it was {format_lengths(flags)} characters long, the last two of them in a "
+            "row, the last one on the output as it stands now. Judge it again, carefully: "
+            f"if you also judge it degenerate, its generation stops and {consequence}."
         )
 
     def _send(
@@ -286,28 +335,29 @@ class OpenRouterJudge(Judge):
             raise TypeError(f"Judge verdict is not a boolean: {verdict!r}")
         return float(verdict)
 
-    def score(self, requests: list[str], texts: list[str]) -> list[float]:
-        verdicts = self._verdicts(requests, texts, self.reasoning, "")
-        # A degenerate verdict retires the rollout and can prune the whole trial, so a judge
-        # that can reason confirms it at a higher effort first, told what is at stake.
-        flagged = [
-            i
-            for i, verdict in enumerate(verdicts)
-            if verdict > self.settings.judge_threshold
+    def score(
+        self, requests: list[str], texts: list[str], flags: list[list[int]]
+    ) -> list[Verdict]:
+        notes = [self._flags_note(item_flags) for item_flags in flags]
+        return self._verdicts(requests, texts, self.reasoning, notes)
+
+    def confirm(
+        self,
+        requests: list[str],
+        texts: list[str],
+        flags: list[list[int]],
+        cancels_trial: bool,
+    ) -> list[Verdict]:
+        notes = [
+            self._confirmation_note(item_flags, cancels_trial) for item_flags in flags
         ]
-        if flagged and self.confirmation_reasoning is not None:
-            confirmed = self._verdicts(
-                [requests[i] for i in flagged],
-                [texts[i] for i in flagged],
-                self.confirmation_reasoning,
-                self.confirmation_note,
-            )
-            kept = sum(verdict > self.settings.judge_threshold for verdict in confirmed)
-            print(
-                f"    [grey50]* Judge confirmed {kept} of {len(flagged)} degenerate verdicts[/]"
-            )
-            for i, verdict in zip(flagged, confirmed):
-                verdicts[i] = verdict
+        verdicts = self._verdicts(requests, texts, self.confirmation_reasoning, notes)
+        confirmed = sum(
+            verdict.score > self.settings.judge_threshold for verdict in verdicts
+        )
+        print(
+            f"    [grey50]* Judge confirmed {confirmed} of {len(verdicts)} rollouts flagged twice in a row[/]"
+        )
         return verdicts
 
     def _verdicts(
@@ -315,9 +365,9 @@ class OpenRouterJudge(Judge):
         requests: list[str],
         texts: list[str],
         reasoning: components.ChatRequestReasoning | None,
-        note: str,
-    ) -> list[float]:
-        verdicts: dict[int, float] = {}
+        notes: list[str],
+    ) -> list[Verdict]:
+        verdicts: dict[int, Verdict] = {}
 
         # Waiting happens here rather than in the workers, so that Ctrl+C stops it.
         while len(verdicts) < len(requests):
@@ -326,7 +376,9 @@ class OpenRouterJudge(Judge):
             # that generation waits for a single round of verdicts.
             with ThreadPoolExecutor(max_workers=len(pending)) as executor:
                 futures = [
-                    executor.submit(self._send, requests[i], texts[i], reasoning, note)
+                    executor.submit(
+                        self._send, requests[i], texts[i], reasoning, notes[i]
+                    )
                     for i in pending
                 ]
 
@@ -335,9 +387,19 @@ class OpenRouterJudge(Judge):
                     result = future.result()
                     # A reply is billed even when its verdict is unusable.
                     usage = result.usage
-                    if usage is not None and isinstance(usage.cost, float):
-                        self.cost += usage.cost
-                    verdicts[i] = self._verdict(result)
+                    cost = usage.cost if usage is not None else None
+                    if isinstance(cost, float):
+                        self.cost += cost
+                    # OpenRouter's generation stats, looked up by this id, name the
+                    # endpoint that served the request.
+                    verdicts[i] = Verdict(
+                        self._verdict(result),
+                        {
+                            "reasoning": result.choices[0].message.reasoning,
+                            "generation": result.id,
+                            "cost": cost,
+                        },
+                    )
                 except Exception as error:
                     raise_if_permanent(error)
                     message = escape(f"{type(error).__name__}: {error}")

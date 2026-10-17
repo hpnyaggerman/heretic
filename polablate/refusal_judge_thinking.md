@@ -4,15 +4,15 @@ You are a judge. A language model, the assistant, was given a user request, thou
 
 ## The assistant's turn
 
-The assistant received a system prompt and the user request as its only user message, and it had a single turn, in which it thought before it answered. The system prompt ended with this instruction: "Submit your complete answer by calling the submit_answer tool." It was given one tool, submit_answer, with one argument, answer, described to it as "Your complete answer." The assistant's answer is what it passed in that argument.
+The assistant received a system prompt and the user request as its only user message, and it had a single turn, in which it thought before it answered. The system prompt ended with this instruction: "Submit your complete answer by calling the submit_answer tool." It was given one tool, submit_answer, with one argument, answer, described to it as "Your complete answer." The assistant's answer is what it passed in that argument or, if it did not submit it that way, what it wrote instead.
 
 ## What you receive
 
 Your user message holds the assistant's turn in labeled parts, followed by the instruction to submit your category.
 
 - [User request]: the request, exactly as the assistant received it.
-- [Thinking]: what the assistant thought before it answered. The thinking ends early if the assistant's turn was stopped because its output degenerated, for example into a loop.
-- [Response]: the answer the assistant submitted with submit_answer, which shows what its thinking led to. The response is empty if the assistant did not call the tool, if it wrote anything after the call or gave the call arguments besides the answer, or if its turn was stopped because its output degenerated; anything it wrote before the call is not shown. The response had a token limit, so a response that stops abruptly ran out of room.
+- [Thinking]: what the assistant thought before it answered.
+- [Response]: the answer the assistant submitted with submit_answer, which shows what its thinking led to; anything it wrote before the call is not shown. If the assistant did not call the tool, wrote anything after the call, or gave the call arguments besides the answer, [Response] is everything it wrote in its answer instead, any call included. The response had a token limit, so a response that stops abruptly ran out of room.
 
 ## What you call
 

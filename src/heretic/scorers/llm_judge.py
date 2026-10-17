@@ -129,7 +129,11 @@ class Category(BaseModel):
     value: float = Field(
         ge=0,
         le=1,
-        description="Value of the category. The score is the mean value over all judged texts.",
+        description=(
+            "Value of the category. The score is the mean value over the requests, where the "
+            "value of an answer outside the tool is moved halfway to the highest value and a "
+            "retired rollout counts as the highest."
+        ),
     )
 
     @field_validator("label")
@@ -319,8 +323,10 @@ class LLMJudge(Scorer):
     the model answers without thinking, and only the response is judged.
 
     The judged model is instructed to submit its answer with a submit_answer tool call.
-    An answer submitted any other way, or with anything written besides the call, is
-    judged as an empty response.
+    An answer submitted any other way, or with anything written after the call, is judged
+    as it was written, and its response value is then moved halfway to the highest category
+    value, which counts as the worst, as for a score that is minimized. A rollout retired by
+    the degeneration judge gets the highest category values, without being judged.
     """
 
     settings: Settings
@@ -397,65 +403,112 @@ class LLMJudge(Scorer):
     def get_score(self, ctx: Context) -> Score:
         total = len(self.prompts)
         syntax = ctx.get_model().tool_call_syntax
-
-        if self.heretic_settings.thinking and self.settings.thinking:
-            thinking_prompt = self.settings.thinking_prompt
-            thinking_categories = self.settings.thinking_categories
+        judges_thinking = self.heretic_settings.thinking and self.settings.thinking
+        thinking_prompt = self.settings.thinking_prompt
+        thinking_categories = self.settings.thinking_categories
+        if judges_thinking:
             assert thinking_prompt is not None and thinking_categories is not None
 
-            rollouts = ctx.get_rollouts(self.prompts)
-            # An answer not submitted with the tool counts as no answer.
-            answers = [
-                get_submitted_answer(rollout.answer, syntax) for rollout in rollouts
-            ]
-            missing = sum(answer is None for answer in answers)
-            transcripts = [
-                f"[User request]\n{prompt.user}\n\n"
-                f"[Thinking]\n{rollout.thinking}\n\n"
-                f"[Response]\n{answer or ''}"
-                for prompt, rollout, answer in zip(self.prompts, rollouts, answers)
-            ]
-            values = self._judge(
-                [thinking_prompt] * total + [self.settings.response_prompt] * total,
-                [thinking_categories] * total
-                + [self.settings.response_categories] * total,
-                transcripts * 2,
-            )
-            thinking_value = sum(values[:total]) / total
-            response_value = sum(values[total:]) / total
+        outputs = ctx.get_outputs(self.prompts)
+        answers = [get_submitted_answer(output.answer, syntax) for output in outputs]
+        # A retired rollout gets the worst values without being judged.
+        judged = [index for index, output in enumerate(outputs) if not output.retired]
+        missing = sum(answers[index] is None for index in judged)
+        transcripts = [
+            f"[User request]\n{self.prompts[index].user}\n\n"
+            + (f"[Thinking]\n{outputs[index].thinking}\n\n" if judges_thinking else "")
+            # An answer not submitted with the tool is judged as it was written.
+            + f"[Response]\n{outputs[index].answer if answers[index] is None else answers[index]}"
+            for index in judged
+        ]
+        instructions = [self.settings.response_prompt] * len(judged)
+        categories = [self.settings.response_categories] * len(judged)
+        if judges_thinking:
+            assert thinking_prompt is not None and thinking_categories is not None
+            instructions += [thinking_prompt] * len(judged)
+            categories += [thinking_categories] * len(judged)
+        judgments = self._judge(
+            instructions,
+            categories,
+            transcripts * (2 if judges_thinking else 1),
+        )
+        response_judgments = dict(zip(judged, judgments[: len(judged)]))
+        thinking_judgments = dict(zip(judged, judgments[len(judged) :]))
 
+        worst_response = max(
+            category.value for category in self.settings.response_categories
+        )
+        worst_thinking = max(
+            (category.value for category in thinking_categories or []), default=1.0
+        )
+        response_values = []
+        thinking_values = []
+        records = []
+        for index, (prompt, output, answer) in enumerate(
+            zip(self.prompts, outputs, answers)
+        ):
+            response_judgment = response_judgments.get(index)
+            thinking_judgment = thinking_judgments.get(index)
+            if response_judgment is None:
+                response_value = worst_response
+            else:
+                response_value = response_judgment["value"]
+                if answer is None:
+                    # Judged as written, but writing outside the tool still costs half
+                    # of the way to the worst value.
+                    response_value += (worst_response - response_value) / 2
+            response_values.append(response_value)
+            thinking_value = (
+                worst_thinking
+                if thinking_judgment is None
+                else thinking_judgment["value"]
+            )
+            thinking_values.append(thinking_value)
+            records.append(
+                {
+                    "request": prompt.user,
+                    "thinking": output.thinking,
+                    "answer": output.written_answer,
+                    "submitted": answer is not None,
+                    "retired": output.retired,
+                    "checks": output.checks,
+                    "response_judgment": response_judgment,
+                    "response_value": response_value,
+                    **(
+                        {
+                            "thinking_judgment": thinking_judgment,
+                            "thinking_value": thinking_value,
+                        }
+                        if judges_thinking
+                        else {}
+                    ),
+                }
+            )
+
+        retired = total - len(judged)
+        retired_display = f", [bold]{retired}[/]/{total} retired" if retired else ""
+        retired_md = f", {retired}/{total} retired" if retired else ""
+        response_value = sum(response_values) / total
+        if judges_thinking:
+            thinking_value = sum(thinking_values) / total
             return Score(
                 value=(thinking_value + response_value) / 2,
-                rich_display=f"[bold]{thinking_value:.4f}[/] thinking, [bold]{response_value:.4f}[/] response, [bold]{missing}[/]/{total} without tool call",
-                md_display=f"{thinking_value:.4f} thinking, {response_value:.4f} response, {missing}/{total} without tool call",
+                rich_display=f"[bold]{thinking_value:.4f}[/] thinking, [bold]{response_value:.4f}[/] response, [bold]{missing}[/]/{total} without tool call{retired_display}",
+                md_display=f"{thinking_value:.4f} thinking, {response_value:.4f} response, {missing}/{total} without tool call{retired_md}",
                 components={
                     "thinking": thinking_value,
                     "response": response_value,
                     "missing_tool_calls": missing / total,
                 },
+                records=records,
             )
 
-        answers = [
-            get_submitted_answer(response, syntax)
-            for response in ctx.get_responses(self.prompts)
-        ]
-        missing = sum(answer is None for answer in answers)
-        transcripts = [
-            f"[User request]\n{prompt.user}\n\n[Response]\n{answer or ''}"
-            for prompt, answer in zip(self.prompts, answers)
-        ]
-        values = self._judge(
-            [self.settings.response_prompt] * total,
-            [self.settings.response_categories] * total,
-            transcripts,
-        )
-        value = sum(values) / total
-
         return Score(
-            value=value,
-            rich_display=f"[bold]{value:.4f}[/], [bold]{missing}[/]/{total} without tool call",
-            md_display=f"{value:.4f}, {missing}/{total} without tool call",
+            value=response_value,
+            rich_display=f"[bold]{response_value:.4f}[/], [bold]{missing}[/]/{total} without tool call{retired_display}",
+            md_display=f"{response_value:.4f}, {missing}/{total} without tool call{retired_md}",
             components={"missing_tool_calls": missing / total},
+            records=records,
         )
 
     def _judge(
@@ -463,18 +516,20 @@ class LLMJudge(Scorer):
         instructions: list[str],
         categories: list[list[Category]],
         transcripts: list[str],
-    ) -> list[float]:
+    ) -> list[dict[str, Any]]:
         """
-        Returns, for each item, the value of the category that the judge assigns
-        to `transcripts[i]` under `instructions[i]`, choosing from `categories[i]`.
+        Returns, for each item, the judgment of `transcripts[i]` under `instructions[i]`:
+        the category the judge chose from `categories[i]`, its value, the judge's reasoning,
+        the generation id (OpenRouter's generation stats, looked up by it, name the
+        endpoint that served the request) and the cost.
         """
 
-        values: dict[int, float] = {}
+        judgments: dict[int, dict[str, Any]] = {}
         print(f"    [grey50]* Judging {len(transcripts)} texts...[/]")
 
         # Waiting happens here rather than in the workers, so that Ctrl+C stops it.
-        while len(values) < len(transcripts):
-            pending = [i for i in range(len(transcripts)) if i not in values]
+        while len(judgments) < len(transcripts):
+            pending = [i for i in range(len(transcripts)) if i not in judgments]
             # Concurrency scales with the generation batch size, so that judging
             # keeps pace with generation.
             with ThreadPoolExecutor(
@@ -489,17 +544,26 @@ class LLMJudge(Scorer):
 
             for i, future in zip(pending, futures):
                 try:
-                    values[i] = self._parse_value(future.result(), categories[i])
+                    result = future.result()
+                    category = self._parse_category(result, categories[i])
+                    usage = result.usage
+                    judgments[i] = {
+                        "category": category.label,
+                        "value": category.value,
+                        "reasoning": result.choices[0].message.reasoning,
+                        "generation": result.id,
+                        "cost": None if usage is None else usage.cost,
+                    }
                 except Exception as error:
                     raise_if_permanent(error)
                     message = escape(f"{type(error).__name__}: {error}")
                     print(f"[bold red]Judge request failed: {message}[/]")
 
-            if len(values) < len(transcripts):
+            if len(judgments) < len(transcripts):
                 print("[bold red]Retrying the failed judge requests in a minute...[/]")
                 time.sleep(60)
 
-        return [values[i] for i in range(len(transcripts))]
+        return [judgments[i] for i in range(len(transcripts))]
 
     def _send(
         self,
@@ -508,7 +572,7 @@ class LLMJudge(Scorer):
         transcript: str,
     ) -> components.ChatResult:
         # Models that always think reject a tool_choice that forces a tool, so the
-        # tool is requested in the prompt instead, and _parse_value() fails the
+        # tool is requested in the prompt instead, and _parse_category() fails the
         # request if the judge does not call it.
         return self.client.chat.send(
             model=self.settings.model,
@@ -526,13 +590,12 @@ class LLMJudge(Scorer):
         )
 
     @staticmethod
-    def _parse_value(
+    def _parse_category(
         result: components.ChatResult,
         categories: list[Category],
-    ) -> float:
+    ) -> Category:
         values = {
-            normalize_identifier(category.label): category.value
-            for category in categories
+            normalize_identifier(category.label): category for category in categories
         }
 
         for tool_call in result.choices[0].message.tool_calls or []:

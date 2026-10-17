@@ -79,7 +79,7 @@ def write_run_information(
             )
         ],
         "baseline_scores": [
-            {"name": name, "score": dict(score.__dict__)}
+            {"name": name, "score": score.summary()}
             for name, score in evaluator.baseline_scores
         ],
     }
@@ -98,3 +98,16 @@ def write_run_information(
 def append_trial_record(directory: str, record: dict[str, Any]):
     with open(os.path.join(directory, "trials.jsonl"), "a", encoding="utf-8") as file:
         file.write(json.dumps(record, default=str) + "\n")
+
+
+def append_outputs(
+    directory: str, trial: int | str, scorer: str, records: list[dict[str, Any]]
+):
+    """
+    Appends what a scorer graded in a trial, or for the baseline, one line per request:
+    the texts, their verdicts or grades, and the degeneration judge's reviews.
+    """
+    with open(os.path.join(directory, "outputs.jsonl"), "a", encoding="utf-8") as file:
+        for record in records:
+            line = {"trial": trial, "scorer": scorer, **record}
+            file.write(json.dumps(line, default=str) + "\n")

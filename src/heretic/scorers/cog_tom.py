@@ -104,17 +104,22 @@ class CogToM(Scorer):
 
     def get_score(self, ctx: Context) -> Score:
         syntax = ctx.get_model().tool_call_syntax
-        answers = [
-            get_submitted_answer(response, syntax)
-            for response in ctx.get_responses(self.prompts)
-        ]
+        outputs = ctx.get_outputs(self.prompts)
+        answers = [get_submitted_answer(output.answer, syntax) for output in outputs]
         # The response must be the tool call alone, and the answer the letter alone.
         wrong = [
             answer is None or answer.strip() != question["answer"]
             for question, answer in zip(self.questions, answers)
         ]
         total = len(self.questions)
-        missing = sum(answer is None for answer in answers)
+        # A retired rollout is wrong without counting as an answer without a tool call.
+        missing = sum(
+            answer is None and not output.retired
+            for answer, output in zip(answers, outputs)
+        )
+        retired = sum(output.retired for output in outputs)
+        retired_display = f", [bold]{retired}[/]/{total} retired" if retired else ""
+        retired_md = f", {retired}/{total} retired" if retired else ""
 
         categories: dict[str, list[bool]] = {}
         for question, is_wrong in zip(self.questions, wrong):
@@ -122,8 +127,8 @@ class CogToM(Scorer):
 
         return Score(
             value=sum(wrong) / total,
-            rich_display=f"[bold]{sum(wrong)}[/]/{total} wrong, [bold]{missing}[/]/{total} without tool call",
-            md_display=f"{sum(wrong)}/{total} wrong, {missing}/{total} without tool call",
+            rich_display=f"[bold]{sum(wrong)}[/]/{total} wrong, [bold]{missing}[/]/{total} without tool call{retired_display}",
+            md_display=f"{sum(wrong)}/{total} wrong, {missing}/{total} without tool call{retired_md}",
             components={
                 "missing_tool_calls": missing / total,
                 **{
@@ -131,4 +136,19 @@ class CogToM(Scorer):
                     for category, values in categories.items()
                 },
             },
+            records=[
+                {
+                    "question": index,
+                    "category": question["category"],
+                    "answer": output.written_answer,
+                    "submitted": answer,
+                    "expected": question["answer"],
+                    "wrong": is_wrong,
+                    "retired": output.retired,
+                    "checks": output.checks,
+                }
+                for index, (question, output, answer, is_wrong) in enumerate(
+                    zip(self.questions, outputs, answers, wrong)
+                )
+            ],
         )

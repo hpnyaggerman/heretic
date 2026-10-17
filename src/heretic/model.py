@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2025-2026  Philipp Emanuel Weidmann <pew@worldwidemann.com> + contributors
 
+import json
+import os
 import time
 from collections.abc import Callable
 from contextlib import suppress
@@ -8,10 +10,13 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, TypeAlias, cast
 
+import bitsandbytes.functional as BNB_F
 import torch
 import torch.nn.functional as F
 from peft import LoraConfig, PeftModel, get_peft_model
+from peft.tuners.lora.layer import LoraLayer
 from rich.markup import escape
+from safetensors.torch import load_file, save_file
 from torch import BoolTensor, FloatTensor, LongTensor, Tensor
 from torch.nn import Module, ModuleList
 from torch.utils.hooks import RemovableHandle
@@ -197,6 +202,33 @@ DynamicLayer.update = update_kv_cache_layer
 HARMONY_FINAL_HEADER = "<|channel|>final<|message|>"
 
 
+def get_base_weight(module: Module) -> Tensor:
+    """The module's original weight in float32, dequantized if stored in 4 bits."""
+    weight = cast(Tensor, getattr(module, "base_layer", module).weight)
+    quant_state = getattr(weight, "quant_state", None)
+    if quant_state is not None:
+        weight = BNB_F.dequantize_4bit(weight.data, quant_state)
+    return weight.float()
+
+
+def scale_rows_hook(
+    scale: Tensor,
+) -> Callable[[Module, tuple[Tensor, ...], Tensor], Tensor]:
+    """A forward hook that scales each row of the module's effective weight by `scale`."""
+
+    def hook(module: Module, inputs: tuple[Tensor, ...], output: Tensor) -> Tensor:
+        # The scale is part of the adapter's change, so disabling the adapter, as for
+        # benchmarking the original model, disables it too.
+        if getattr(module, "disable_adapters", False):
+            return output
+        bias = cast(Tensor | None, getattr(module, "base_layer", module).bias)
+        if bias is None:
+            return (output.float() * scale).to(output.dtype)
+        return ((output - bias).float() * scale + bias.float()).to(output.dtype)
+
+    return hook
+
+
 # The list contains one element per layer.
 # Each element maps from the component name to a (possibly sparse) mapping
 # from the module index to an (input, output) tuple containing the I/O
@@ -207,20 +239,37 @@ ModuleIO: TypeAlias = list[dict[str, dict[int, tuple[Tensor, Tensor]]]]
 @dataclass
 class Rollout:
     thinking: str
+    # Empty for a retired rollout, which counts as no answer.
     answer: str
     retired: bool
+    # The degeneration judge's reviews of the rollout, in order, for the run log.
+    checks: list[dict[str, Any]] = field(default_factory=list)
+    # What a retired rollout had answered before it was retired.
+    retired_answer: str = ""
+
+    @property
+    def written_answer(self) -> str:
+        """The answer as the model wrote it, a retired rollout's included, for the run log."""
+        return self.retired_answer if self.retired else self.answer
 
 
 class RolloutRetired(Exception):
-    """Raised when the judge retires a rollout while abort_on_retirement is set."""
+    """
+    Raised when the judge retires a second rollout of the same scorer while
+    abort_on_retirement is set.
+    """
 
-    def __init__(self, request: str, part: str):
+    def __init__(self, request: str, part: str, outputs: list[dict[str, Any]]):
         super().__init__(f"The {part} for a request degenerated.")
         self.request = request
         # "thinking" or "answer"
         self.part = part
-        # The scores of the scorers that finished before the abort, set by the evaluator.
+        # The scorer's rollouts as far as they got, each with its request.
+        self.outputs = outputs
+        # The scores of the scorers that finished before the abort, and the name of the
+        # scorer whose rollouts were being generated, set by the evaluator.
         self.scores: list[tuple[str, Any]] = []
+        self.scorer = ""
 
 
 @dataclass
@@ -252,6 +301,12 @@ class _RolloutState:
     # The run this rollout continues from, and its row there.
     run: _Run | None = None
     row: int = 0
+    # The part, thinking or answer, that the flags belong to; the lengths, in characters,
+    # of the text that each review flagging it saw; and whether the latest review did.
+    flagged_part: str = "thinking"
+    flags: list[int] = field(default_factory=list)
+    flagged_last: bool = False
+    checks: list[dict[str, Any]] = field(default_factory=list)
 
     def remaining(self, settings: Settings) -> int:
         if self.closer_end is None:
@@ -311,6 +366,7 @@ class Model:
     def __init__(self, settings: Settings):
         self.settings = settings
         self.needs_reload = False
+        self._row_scales: dict[Module, tuple[Tensor, RemovableHandle]] = {}
 
         self.revision_kwargs = {}
         if settings.model_commit is not None:
@@ -487,6 +543,72 @@ class Model:
             if ("lora_A" in name or "lora_B" in name) and hasattr(module, "weight"):
                 torch.nn.init.zeros_(module.weight)
 
+    def set_row_scale(self, module: Module, scale: Tensor):
+        """
+        Scales each row of the module's effective weight, its base weight plus its LoRA
+        change, by the matching element of `scale`, which a LoRA alone cannot do.
+        The scale lasts until the model is reset.
+        """
+        if module in self._row_scales:
+            self._row_scales[module][1].remove()
+        handle = module.register_forward_hook(scale_rows_hook(scale))
+        self._row_scales[module] = (scale, handle)
+
+    def get_row_scale(self, module: Module) -> Tensor | None:
+        entry = self._row_scales.get(module)
+        return None if entry is None else entry[0]
+
+    def _clear_row_scales(self):
+        for _, handle in self._row_scales.values():
+            handle.remove()
+        self._row_scales.clear()
+
+    def _get_row_scales_by_name(self) -> dict[str, Tensor]:
+        """The row scales by the names of their modules in the model without its adapters."""
+        names = {id(module): name for name, module in self.model.named_modules()}
+        return {
+            names[id(module)].removeprefix("base_model.model."): scale
+            for module, (scale, _) in self._row_scales.items()
+        }
+
+    @staticmethod
+    def _apply_row_scales(model: Module, scales: dict[str, Tensor]):
+        for name, scale in scales.items():
+            weight = cast(Tensor, model.get_submodule(name).weight)
+            scaled = weight.data.float() * scale.to(weight.device)[:, None]
+            weight.data = scaled.to(weight.dtype)
+
+    def save_adapter(self, directory: str, max_shard_size: int | str):
+        """
+        Saves the LoRA adapter. Row scales cannot be expressed by a LoRA, so with row scales
+        the adapter is saved as a DoRA adapter: DoRA rescales each row of W + BA to its
+        magnitude, so magnitudes equal to the original row norms ||W|| apply exactly the
+        row scales, which are ||W|| / ||W + BA||, and leave unscaled modules unchanged.
+        """
+        assert isinstance(self.model, PeftModel)
+        self.model.save_pretrained(directory, max_shard_size=max_shard_size)
+        if not self._row_scales:
+            return
+
+        weights_path = os.path.join(directory, "adapter_model.safetensors")
+        tensors = load_file(weights_path)
+        for name, module in self.model.named_modules():
+            if isinstance(module, LoraLayer) and "default" in module.lora_A:
+                lora_A_name = f"{name}.lora_A.weight"
+                tensors[f"{name}.lora_magnitude_vector"] = (
+                    torch.linalg.vector_norm(get_base_weight(module), dim=1)
+                    .to(tensors[lora_A_name].dtype)
+                    .cpu()
+                )
+        save_file(tensors, weights_path, metadata={"format": "pt"})
+
+        config_path = os.path.join(directory, "adapter_config.json")
+        with open(config_path, encoding="utf-8") as file:
+            config = json.load(file)
+        config["use_dora"] = True
+        with open(config_path, "w", encoding="utf-8") as file:
+            json.dump(config, file, indent=2)
+
     def _get_quantization_config(self, dtype: str) -> BitsAndBytesConfig | None:
         """
         Creates quantization config based on settings.
@@ -551,11 +673,16 @@ class Model:
             # Merge and unload
             print("* Merging LoRA adapters into base model...")
             merged_model = peft_model.merge_and_unload()
+            self._apply_row_scales(merged_model, self._get_row_scales_by_name())
             return merged_model
         else:
             # Non-quantized model - can merge directly
             print("* Merging LoRA adapters into base model...")
+            row_scales = self._get_row_scales_by_name()
             merged_model = self.model.merge_and_unload()
+            self._apply_row_scales(merged_model, row_scales)
+            # The merge replaced the modules that the row scales were hooked to.
+            self._clear_row_scales()
             # merge_and_unload() modifies self.model in-place, destroying LoRA adapters.
             # Mark for full reload if user switches trials later.
             self.needs_reload = True
@@ -584,9 +711,11 @@ class Model:
             # Zeroing A as well ensures that adapter weights of modules not modified
             # by the next trial don't depend on what previous trials did.
             self._zero_lora_weights()
+            self._clear_row_scales()
             return True
 
         # Purge existing model object from memory to make space.
+        self._clear_row_scales()
         self.model = None
         empty_cache()
 
@@ -953,6 +1082,8 @@ class Model:
             for prompt, chat_prompt in zip(prompts, self._chat_prompts(prompts))
         ]
 
+        # A scorer's first retired rollout counts as failed; a second aborts the trial.
+        retired_count = 0
         start_time = time.perf_counter()
         while active := [state for state in states if not state.done]:
             # Rollouts that closed their thinking within a run answer in it.
@@ -968,27 +1099,51 @@ class Model:
             ]
             groups = [(running, True), (answering, True)]
             if settings.judge_first_chunk_only:
-                # Rollouts that passed the first-chunk gate think to the end in one call.
+                # Rollouts that passed the first-chunk gate think to the end in one call;
+                # one that the latest review flagged is judged on until a review passes it,
+                # and answers are judged chunk by chunk.
+                gated = [
+                    state
+                    for state in running
+                    if state.closer_end is not None
+                    or state.judged_length == 0
+                    or state.flagged_last
+                ]
                 groups = [
-                    ([state for state in running if state.judged_length == 0], True),
-                    ([state for state in running if state.judged_length > 0], False),
+                    (gated, True),
+                    ([state for state in running if state not in gated], False),
                     (answering, True),
                 ]
             for group, chunked in groups:
+                # Thinking to the end in one call stops at the closer, so that the answer
+                # is generated chunk by chunk instead of in the same call.
+                call_stop_ids = (
+                    [*stop_ids, stop_id]
+                    if in_stream and not chunked and stop_id is not None
+                    else stop_ids
+                )
                 batch_size = self._batch_size([state.prompt for state in group])
                 for batch in batchify(group, batch_size):
-                    self._advance(
+                    retired = self._advance(
                         batch,
                         closer_ids,
                         stop_id,
-                        stop_ids,
+                        call_stop_ids,
                         stop_string,
                         judge,
                         chunked,
                         # Keeping the caches of several batches between calls would
                         # need more memory than generating them one at a time.
                         len(group) <= batch_size,
+                        retired_count,
                     )
+                    retired_count += len(retired)
+                    if self.abort_on_retirement and retired_count >= 2:
+                        raise RolloutRetired(
+                            retired[-1].prompt.user,
+                            "thinking" if retired[-1].closer_end is None else "answer",
+                            [self._output(state) for state in states],
+                        )
                     elapsed = time.perf_counter() - start_time
                     tokens = sum(len(state.generated) for state in states)
                     print(
@@ -1018,6 +1173,17 @@ class Model:
 
         return [self._rollout(state) for state in states]
 
+    def _output(self, state: _RolloutState) -> dict[str, Any]:
+        """The rollout as far as it got, with its request, for the run log."""
+        rollout = self._rollout(state)
+        return {
+            "request": state.prompt.user,
+            "thinking": rollout.thinking,
+            "answer": rollout.written_answer,
+            "retired": rollout.retired,
+            "checks": rollout.checks,
+        }
+
     def _closer_start(self, ids: list[int], closer: str) -> int | None:
         if closer not in self.tokenizer.decode(ids, skip_special_tokens=True):
             return None
@@ -1038,7 +1204,9 @@ class Model:
         judge: Judge | None,
         chunked: bool,
         continuable: bool,
-    ):
+        retired_count: int,
+    ) -> list[_RolloutState]:
+        """Generates the next chunk of the batch's rollouts and returns those it retired."""
         settings = self.settings
         max_new_tokens = max(state.remaining(settings) for state in batch)
         # Without a judge, chunks only serve to drop finished rollouts between calls, which
@@ -1117,10 +1285,11 @@ class Model:
                     next_run.rollouts += 1
 
         if judge is None:
-            return
+            return []
 
         judged = []
         texts = []
+        lengths = []
         for state in batch:
             if state.done and state.closer_end is None:
                 continue
@@ -1130,6 +1299,7 @@ class Model:
                 settings.judge_first_chunk_only
                 and state.closer_end is None
                 and state.judged_length > 0
+                and not state.flagged_last
             ):
                 continue
             segment = (
@@ -1141,21 +1311,76 @@ class Model:
                 state.judged_length = len(state.generated)
                 judged.append(state)
                 texts.append(text)
+                lengths.append(len(segment))
 
-        if judged:
-            scores = judge.score([state.prompt.user for state in judged], texts)
-            for state, score in zip(judged, scores):
-                if score > settings.judge_threshold:
-                    state.done = True
-                    state.retired = True
-                    if state.run is not None:
-                        state.run.rollouts -= 1
-                        state.run = None
-                    if self.abort_on_retirement:
-                        raise RolloutRetired(
-                            state.prompt.user,
-                            "thinking" if state.closer_end is None else "answer",
-                        )
+        if not judged:
+            return []
+
+        for state in judged:
+            part = "thinking" if state.closer_end is None else "answer"
+            if part != state.flagged_part:
+                # The answer is a new text, so the thinking's flags do not carry over.
+                state.flagged_part, state.flags, state.flagged_last = part, [], False
+
+        requests = [state.prompt.user for state in judged]
+        verdicts = judge.score(requests, texts, [list(state.flags) for state in judged])
+        escalated = []
+        for index, (state, text, length, verdict) in enumerate(
+            zip(judged, texts, lengths, verdicts)
+        ):
+            flagged = verdict.score > settings.judge_threshold
+            state.checks.append(
+                {
+                    "part": state.flagged_part,
+                    "tokens": length,
+                    "characters": len(text),
+                    "review": "quick",
+                    "earlier_flags": list(state.flags),
+                    "degenerate": flagged,
+                    **verdict.record,
+                }
+            )
+            if flagged:
+                state.flags.append(len(text))
+                # Only a second flag in a row escalates, so a lone flag never retires.
+                if state.flagged_last:
+                    escalated.append(index)
+            state.flagged_last = flagged
+
+        if not escalated:
+            return []
+
+        # Confirming cancels the trial if the scorer already lost a rollout; two confirmed
+        # together cancel it as well, though each review is told it costs only its answer.
+        confirmations = judge.confirm(
+            [requests[index] for index in escalated],
+            [texts[index] for index in escalated],
+            [list(judged[index].flags) for index in escalated],
+            self.abort_on_retirement and retired_count >= 1,
+        )
+        retired = []
+        for index, verdict in zip(escalated, confirmations):
+            state = judged[index]
+            confirmed = verdict.score > settings.judge_threshold
+            state.checks.append(
+                {
+                    "part": state.flagged_part,
+                    "tokens": lengths[index],
+                    "characters": len(texts[index]),
+                    "review": "careful",
+                    "earlier_flags": list(state.flags),
+                    "degenerate": confirmed,
+                    **verdict.record,
+                }
+            )
+            if confirmed:
+                state.done = True
+                state.retired = True
+                if state.run is not None:
+                    state.run.rollouts -= 1
+                    state.run = None
+                retired.append(state)
+        return retired
 
     def _answer_ids(self, state: _RolloutState) -> list[int]:
         assert state.closer_end is not None
@@ -1169,18 +1394,16 @@ class Model:
             thinking_ids = state.generated[: state.closer_end - state.closer_length]
             answer_ids = self._answer_ids(state)
 
-        answer = (
-            ""
-            if state.retired
-            else cast(str, self.tokenizer.decode(answer_ids, skip_special_tokens=True))
-        )
+        answer = cast(str, self.tokenizer.decode(answer_ids, skip_special_tokens=True))
 
         return Rollout(
             thinking=cast(
                 str, self.tokenizer.decode(thinking_ids, skip_special_tokens=True)
             ),
-            answer=answer,
+            answer="" if state.retired else answer,
             retired=state.retired,
+            checks=state.checks,
+            retired_answer=answer if state.retired else "",
         )
 
     def get_responses(

@@ -191,6 +191,15 @@ class Context:
             self._rollouts_cache[key] = self._model.get_rollouts(prompts, self._judge)
         return self._rollouts_cache[key]
 
+    def get_outputs(self, prompts: list[Prompt]) -> list[Rollout]:
+        """The rollouts in thinking mode, otherwise the responses as rollouts without thinking."""
+        if self._settings.thinking:
+            return self.get_rollouts(prompts)
+        return [
+            Rollout(thinking="", answer=response, retired=False)
+            for response in self.get_responses(prompts)
+        ]
+
     def get_logits(self, prompts: list[Prompt]) -> Tensor:
         return self._model.get_logits_batched(prompts)
 

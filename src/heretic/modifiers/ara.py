@@ -74,7 +74,9 @@ class Settings(BaseModel):
         description=(
             "Whether to renormalize the rows of the modified matrices to preserve "
             "the original matrices' row magnitudes. This is believed to improve "
-            'intelligence retention (see Lai 2025, "Magnitude-Preserving Orthogonal Ablation").'
+            'intelligence retention (see Lai 2025, "Magnitude-Preserving Orthogonal Ablation"). '
+            "The fit scores the renormalized rows, and the model applies the same per-row "
+            "scale on top of the LoRA adapter, which an exported adapter carries as DoRA magnitudes."
         ),
     )
 
@@ -364,6 +366,16 @@ class ARA(Modifier[Parameters]):
                     # per processed weight) and can easily consume tens of GB of VRAM,
                     # causing out-of-memory errors during the subsequent evaluation.
                     optimizer.zero_grad(set_to_none=True)
+
+                    if self.settings.preserve_row_magnitudes:
+                        # The fit scored the rows rescaled to their original norms, which
+                        # a LoRA alone cannot apply, so the model scales them the same way.
+                        with torch.no_grad():
+                            W_fit = W_base + (lora_B @ lora_A)
+                            row_norms = LA.vector_norm(W_fit, dim=1)
+                            # F.normalize divides by at least 1e-12 as well.
+                            scale = W_row_norms.squeeze(1) / row_norms.clamp_min(1e-12)
+                        model.set_row_scale(module, scale)
 
     def reset_model(self, ctx: Context) -> None:
         model = ctx.get_model()

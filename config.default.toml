@@ -94,12 +94,14 @@ thinking_sampling = "model"
 thinking_generation_kwargs = {}
 
 # Judge used to retire degenerate rollouts of the modified model in thinking mode;
-# the unmodified model's rollouts are not judged. Options:
+# the unmodified model's rollouts are not judged. A rollout is retired only when two reviews in
+# a row of its thinking, or of its answer, flag it and a careful review confirms it; a lone flag
+# only stays on record. Options:
 # "none" (no judge),
 # "shieldstral" (local classifier downloaded from Hugging Face),
 # "openrouter" (model called through the OpenRouter API using the OPENROUTER_API_KEY environment variable;
-# a model that can reason judges at low reasoning effort and, before a rollout is retired, judges it
-# again at high effort, told of the first verdict and of what retiring the rollout costs).
+# it is told of the earlier flags, and a model that can reason reviews at low reasoning effort and
+# confirms at high effort, told what retiring the rollout costs).
 thinking_judge = "none"
 
 # Judge probability above which a rollout is retired.
@@ -108,12 +110,14 @@ judge_threshold = 0.5
 # Criteria the judge applies when deciding whether the model output so far is degenerate.
 judge_criteria = "Degenerate output is repetitive, stuck in a loop, incoherent, in a different language than the request, or drifting away from the request."
 
-# Whether to judge only the first thinking chunk and let rollouts that pass it
-# think to the end unjudged. The answer is still judged.
+# Whether to stop judging a rollout's thinking once a review passes it, so that a rollout
+# whose first thinking chunk passes thinks to the end unjudged. The answer is still judged
+# chunk by chunk.
 judge_first_chunk_only = false
 
-# Whether to abort a trial as soon as the judge retires one of its rollouts, skipping the rest
-# of the trial's evaluation. The optimizer gets the scores the trial finished and the worst
+# Whether to abort a trial as soon as the judge retires a second rollout of the same scorer,
+# skipping the rest of the trial's evaluation; a scorer's first retired rollout counts as its
+# worst answer. The optimizer gets the scores the trial finished and the worst
 # value for each other objective (or the trial is pruned if one of those scorers has no value
 # range), and the trial is never offered as a result. Scorers run in the order of the scorers
 # list, so put the one most likely to expose a broken model first.
@@ -182,7 +186,10 @@ study_checkpoint_dir = "checkpoints"
 # Each run gets a subdirectory containing run.json (environment, settings, model config,
 # abliterable modules with their shapes, modifier, objectives, and baseline scores),
 # priors.pt (tensors the modifier computed before the trials, such as refusal directions),
-# and trials.jsonl (parameters and scores of each finished trial). Disabled if unset.
+# trials.jsonl (parameters and scores of each finished trial), and outputs.jsonl (for the
+# baseline and each trial, what the scorers that keep records graded: each request's texts,
+# verdicts or grades with the judges' reasoning, generation ids and costs, and the degeneration
+# judge's reviews). Disabled if unset.
 # run_log_dir = "runs"
 
 # Maximum size for individual safetensors files generated when exporting a model.
@@ -340,8 +347,10 @@ thinking = true
 # lists, and choosing a dataset that elicits it.
 # The judged model is instructed to submit its answer with a submit_answer tool call, so that
 # the score also reflects its instruction following. An answer submitted any other way, or with
-# anything written besides the call, is judged as an empty response, and the number of such
-# answers is shown with the score.
+# anything written after the call, is judged as it was written, and its response value is then
+# moved halfway to the highest category value, which counts as the worst, as for a score that is
+# minimized; the number of such answers is shown with the score. A rollout retired by the
+# degeneration judge gets the highest category values unjudged.
 
 # Instructions for judging the response. The judge sees the user request, the thinking
 # (if the judged model thinks), and the response, and submits one of the response categories.
@@ -362,7 +371,8 @@ thinking = true
 # (which the judge submits), a description (what the judged text must show to belong to it),
 # optional details (criteria, examples, or edge cases that clarify when it applies, sent to
 # the judge with the description), and a value from 0 to 1. The score is the mean value over
-# the judged texts. The label the judge submits is matched ignoring case, whitespace, "-",
+# the requests, adjusted as described above for answers outside the tool and for retired
+# rollouts. The label the judge submits is matched ignoring case, whitespace, "-",
 # and "_", so labels must be unique under that comparison. At least two categories are required.
 # Required.
 # [[scorer.LLMJudge.response_categories]]

@@ -268,23 +268,39 @@ class QualityCanary(Scorer):
         ]
 
     def get_score(self, ctx: Context) -> Score:
-        if self.heretic_settings.thinking:
-            responses = [rollout.answer for rollout in ctx.get_rollouts(self.prompts)]
-        else:
-            responses = ctx.get_responses(self.prompts)
-
+        outputs = ctx.get_outputs(self.prompts)
         syntax = ctx.get_model().tool_call_syntax
-        calls = [get_call(response, syntax) for response in responses]
+        calls = [get_call(output.answer, syntax) for output in outputs]
+        passed = [
+            is_passed(question, call) for question, call in zip(self.questions, calls)
+        ]
         total = len(self.questions)
-        failed = sum(
-            not is_passed(question, call)
-            for question, call in zip(self.questions, calls)
+        failed = total - sum(passed)
+        # A retired rollout fails without counting as an answer without a tool call.
+        missing = sum(
+            call is None and not output.retired for call, output in zip(calls, outputs)
         )
-        missing = sum(call is None for call in calls)
+        retired = sum(output.retired for output in outputs)
+        retired_display = f", [bold]{retired}[/]/{total} retired" if retired else ""
+        retired_md = f", {retired}/{total} retired" if retired else ""
 
         return Score(
             value=failed / total,
-            rich_display=f"[bold]{failed}[/]/{total} failed, [bold]{missing}[/]/{total} without tool call",
-            md_display=f"{failed}/{total} failed, {missing}/{total} without tool call",
+            rich_display=f"[bold]{failed}[/]/{total} failed, [bold]{missing}[/]/{total} without tool call{retired_display}",
+            md_display=f"{failed}/{total} failed, {missing}/{total} without tool call{retired_md}",
             components={"missing_tool_calls": missing / total},
+            records=[
+                {
+                    "question": question["id"],
+                    "thinking": output.thinking,
+                    "answer": output.written_answer,
+                    "call": None if call is None else list(call),
+                    "passed": question_passed,
+                    "retired": output.retired,
+                    "checks": output.checks,
+                }
+                for question, output, call, question_passed in zip(
+                    self.questions, outputs, calls, passed
+                )
+            ],
         )

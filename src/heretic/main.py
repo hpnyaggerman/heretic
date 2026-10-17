@@ -34,7 +34,7 @@ def _is_help_invocation() -> bool:
 
 # Parse and handle CLI help before importing heavyweight ML/runtime dependencies.
 if _is_help_invocation():
-    Settings()
+    Settings.from_command_line()
 
 
 # FIXME: Rich progress bars are currently disabled because of rendering issues
@@ -51,6 +51,7 @@ import logging
 import math
 import random
 import re
+import tempfile
 import time
 import warnings
 from datetime import datetime, timezone
@@ -95,7 +96,8 @@ from .reproduce import (
     collect_reproducibles,
     load_reproduction_information,
 )
-from .run_log import append_trial_record, write_run_information
+from .run_log import append_outputs, append_trial_record, write_run_information
+from .scorer import Score
 from .system import empty_cache, get_accelerator_info
 from .utils import (
     ask_if_unset,
@@ -195,6 +197,98 @@ def obtain_export_strategy(
     )
 
 
+def get_recorded_baseline_scores(
+    study: optuna.Study,
+) -> list[tuple[str, Score]] | None:
+    """
+    The baseline scores recorded with the study, or None if there are none. Studies that
+    predate recording them with the study have them in each finished trial's score records.
+    """
+    records = study.user_attrs.get("baseline_scores")
+    if records is None:
+        for trial in study.get_trials(deepcopy=False, states=(TrialState.COMPLETE,)):
+            # An aborted trial's score records cover only the scorers it finished.
+            if "aborted" not in trial.user_attrs and "scores" in trial.user_attrs:
+                records = [
+                    {"name": record["name"], "score": record["baseline"]}
+                    for record in trial.user_attrs["scores"]
+                ]
+                break
+    if records is None:
+        return None
+    return [(record["name"], Score(**record["score"])) for record in records]
+
+
+def restore_settings(stored: str | dict[str, Any], current: Settings) -> Settings:
+    """
+    Settings rebuilt from stored ones, with those excluded from storing, which belong to
+    the run rather than to the study, taken from the current settings.
+    """
+    settings = (
+        Settings.model_validate_json(stored)
+        if isinstance(stored, str)
+        else Settings.model_validate(stored)
+    )
+    for name, field in Settings.model_fields.items():
+        if field.exclude:
+            setattr(settings, name, getattr(current, name))
+    return settings
+
+
+def is_counted(trial: FrozenTrial) -> bool:
+    """
+    Whether the trial counts as one of the study's trials. An interrupted trial does not,
+    since a resumed study runs it again, but one that failed with an error or with values
+    that are not numbers does, so that it is not suggested again.
+    """
+    if trial.state == TrialState.FAIL:
+        return "interrupted" not in trial.user_attrs
+    return trial.state in (TrialState.COMPLETE, TrialState.PRUNED)
+
+
+def count_trials(study: optuna.Study) -> int:
+    """The number of the study's trials that count."""
+    return sum(is_counted(trial) for trial in study.get_trials(deepcopy=False))
+
+
+def get_sampler_state(sampler: TPESampler) -> list[list[Any]]:
+    """
+    The states of the random number generators that the sampler draws trials from, so that
+    a resumed study can suggest the trials that an uninterrupted one would have.
+    """
+    # TPE draws from its own generator, and from its random sampler's for startup trials.
+    return [
+        [name, keys.tolist(), position, has_gauss, cached_gaussian]
+        for name, keys, position, has_gauss, cached_gaussian in (
+            cast(tuple, sampler._rng.rng.get_state()),
+            cast(tuple, sampler._random_sampler._rng.rng.get_state()),
+        )
+    ]
+
+
+def restore_sampler_state(study: optuna.Study) -> bool:
+    """
+    Restores the sampler's state after the study's last counted trial, so that the study
+    suggests the trials that run again, and those after them, as an uninterrupted study
+    would have. Returns False if that trial did not record the state.
+    """
+    counted_trials = [
+        trial for trial in study.get_trials(deepcopy=False) if is_counted(trial)
+    ]
+    if not counted_trials:
+        return True
+    state = counted_trials[-1].user_attrs.get("sampler_state")
+    if state is None:
+        return False
+    sampler = cast(TPESampler, study.sampler)
+    for generator, (name, keys, position, has_gauss, cached_gaussian) in zip(
+        (sampler._rng.rng, sampler._random_sampler._rng.rng), state, strict=True
+    ):
+        keys = np.array(keys, dtype=np.uint32)
+        generator.set_state((name, keys, position, has_gauss, cached_gaussian))
+    return True
+
+
 def run():
     # Modified "Pagga" font from https://budavariam.github.io/asciiart-text/
     print(f"[cyan]█░█░█▀▀░█▀▄░█▀▀░▀█▀░█░█▀▀[/]  v{version('heretic-llm')}")
@@ -230,7 +324,7 @@ def run():
     try:
         # The required argument "model" must be provided by the user,
         # either on the command line or in the configuration file.
-        settings = Settings()
+        settings = Settings.from_command_line()
     except ValidationError as error:
         print(f"[red]Configuration contains [bold]{error.error_count()}[/] errors:[/]")
 
@@ -270,7 +364,7 @@ def run():
 
         print()
 
-        settings = Settings.model_validate(reproduction_information["settings"])
+        settings = restore_settings(reproduction_information["settings"], settings)
 
     if settings.seed is None:
         settings.seed = random.randint(0, 2**32 - 1)
@@ -327,6 +421,7 @@ def run():
     lock_obj = JournalFileOpenLock(study_checkpoint_file)
     backend = JournalFileBackend(study_checkpoint_file, lock_obj=lock_obj)
     storage = JournalStorage(backend)
+    recorded_baseline_scores = None
 
     try:
         existing_study = storage.get_all_studies()[0]
@@ -403,12 +498,10 @@ def run():
             return
 
         if action == "continue":
-            # Excluded from the stored settings, so it is carried over.
-            run_log_dir = settings.run_log_dir
-            settings = Settings.model_validate_json(
-                existing_study.user_attrs["settings"]
+            settings = restore_settings(existing_study.user_attrs["settings"], settings)
+            recorded_baseline_scores = get_recorded_baseline_scores(
+                optuna.load_study(study_name="heretic", storage=storage)
             )
-            settings.run_log_dir = run_log_dir
         elif action == "restart":
             os.unlink(study_checkpoint_file)
             backend = JournalFileBackend(study_checkpoint_file, lock_obj=lock_obj)
@@ -617,7 +710,7 @@ def run():
         sampling.update(model.sampling_kwargs())
         print(f"* Thinking-mode sampling: [bold]{escape(repr(sampling))}[/]")
 
-    evaluator = Evaluator(settings, model)
+    evaluator = Evaluator(settings, model, recorded_baseline_scores)
 
     if settings.evaluate_model is not None:
         print()
@@ -662,6 +755,9 @@ def run():
         write_run_information(
             run_log_directory, settings, model, modifier_entry, evaluator
         )
+        # A baseline reused from the study has no records; they are in an earlier run's log.
+        for name, score in evaluator.baseline_scores:
+            append_outputs(run_log_directory, "baseline", name, score.records)
         print(f"* Logging the run to [bold]{run_log_directory}[/]")
 
     # Only the optimization trials are aborted; evaluating a model outside of them
@@ -674,13 +770,20 @@ def run():
 
     def objective(trial: Trial) -> tuple[float, ...]:
         nonlocal trial_index
-        trial_index += 1
+        # Interrupted trials do not count, so a trial that runs again in place of one
+        # takes its index.
+        trial_index = count_trials(trial.study) + 1
         trial.set_user_attr("index", trial_index)
         trial_start_time = time.perf_counter()
 
         ctx = Context(settings=settings, model=model)
         parameters = modifier.suggest_parameters(ctx, trial)
         trial.set_user_attr("parameters", parameters.to_dict())
+        # The sampler has drawn all of the trial's parameters, and draws nothing else
+        # before the next trial.
+        trial.set_user_attr(
+            "sampler_state", get_sampler_state(cast(TPESampler, trial.study.sampler))
+        )
 
         print()
         print(
@@ -729,6 +832,15 @@ def run():
                         "objective_values": aborted_values,
                     },
                 )
+                for name, score in error.scores:
+                    append_outputs(run_log_directory, trial_index, name, score.records)
+                # The scorer that was running when the trial was aborted graded nothing.
+                append_outputs(
+                    run_log_directory,
+                    trial_index,
+                    error.scorer,
+                    [{**output, "aborted": True} for output in error.outputs],
+                )
             if aborted_values is None:
                 raise TrialPruned()
             return aborted_values
@@ -760,19 +872,28 @@ def run():
                     "objective_values": objective_values,
                 },
             )
+            for name, score in scores:
+                append_outputs(run_log_directory, trial_index, name, score.records)
         print_memory_usage()
         if evaluator.judge is not None:
             print(evaluator.judge.usage())
 
         return objective_values
 
+    # Optuna records a trial that raises KeyboardInterrupt as failed, then raises it again.
+    optimize_logger = logging.getLogger("optuna.study._optimize")
+
     def objective_wrapper(trial: Trial) -> tuple[float, ...]:
         try:
             return objective(trial)
         except KeyboardInterrupt:
-            # Stop the study gracefully on Ctrl+C.
-            trial.study.stop()
-            raise TrialPruned()
+            # Stop the study on Ctrl+C. Optuna records the trial as failed, but it does not
+            # count, so a resumed study runs it again and Optuna's warnings are not shown.
+            trial.set_user_attr("interrupted", True)
+            optimize_logger.setLevel(logging.ERROR)
+            print()
+            print("[yellow]Trial interrupted. Resuming the study runs it again.[/]")
+            raise
 
     # Derive objective info from the configured scorers.
     objective_names = evaluator.get_objective_names()
@@ -794,8 +915,32 @@ def run():
 
         study.set_user_attr("settings", settings.model_dump_json())
         study.set_user_attr("finished", False)
+        if "baseline_scores" not in study.user_attrs:
+            study.set_user_attr(
+                "baseline_scores",
+                [
+                    {"name": name, "score": score.summary()}
+                    for name, score in evaluator.baseline_scores
+                ],
+            )
 
-        start_index = trial_index = len(study.trials)
+        # A trial left running by a killed process was interrupted. It must not stay running,
+        # because TPE's constant liar would take it into account. Optuna has no public way
+        # to set an attribute of a trial that another process started.
+        for trial in study.get_trials(deepcopy=False, states=(TrialState.RUNNING,)):
+            study._storage.set_trial_user_attr(trial._trial_id, "interrupted", True)
+            study.tell(trial.number, state=TrialState.FAIL)
+        # Interrupted trials do not count, and restoring the sampler's state from the last
+        # counted trial makes the study suggest them again, then go on as if never
+        # interrupted.
+        if not restore_sampler_state(study):
+            print()
+            print(
+                "[yellow]This study did not record its sampler's state, so the resumed "
+                "study suggests other trials than an uninterrupted one would have.[/]"
+            )
+
+        start_index = trial_index = count_trials(study)
         if start_index > 0:
             print()
             print("Resuming existing study.")
@@ -803,15 +948,16 @@ def run():
         try:
             study.optimize(
                 objective_wrapper,
-                n_trials=settings.n_trials - len(study.trials),
+                n_trials=settings.n_trials - count_trials(study),
             )
         except KeyboardInterrupt:
             # This additional handler takes care of the small chance that KeyboardInterrupt
             # is raised just between trials, which wouldn't be caught by the handler
             # defined in objective_wrapper above.
             pass
+        optimize_logger.setLevel(logging.NOTSET)
 
-        if len(study.trials) == settings.n_trials:
+        if count_trials(study) == settings.n_trials:
             study.set_user_attr("finished", True)
 
     trial_loop_active = True
@@ -890,6 +1036,13 @@ def run():
             print()
             print("[bold green]Optimization finished![/]")
 
+            if settings.exit_after_optimization:
+                print()
+                print("Pareto optimal trials:")
+                for trial in sorted_trials:
+                    print(f"* {escape(format_trial_title(trial))}")
+                return
+
             if settings.trial_index is None:
                 print()
                 print(
@@ -955,19 +1108,22 @@ def run():
                     if n_additional_trials == 0:
                         continue
 
-                    settings.n_trials = len(study.trials) + n_additional_trials
+                    settings.n_trials = count_trials(study) + n_additional_trials
                     study.set_user_attr("settings", settings.model_dump_json())
                     study.set_user_attr("finished", False)
+                    # A trial interrupted in this process is suggested again.
+                    restore_sampler_state(study)
 
                     try:
                         study.optimize(
                             objective_wrapper,
-                            n_trials=settings.n_trials - len(study.trials),
+                            n_trials=settings.n_trials - count_trials(study),
                         )
                     except KeyboardInterrupt:
                         pass
+                    optimize_logger.setLevel(logging.NOTSET)
 
-                    if len(study.trials) == settings.n_trials:
+                    if count_trials(study) == settings.n_trials:
                         study.set_user_attr("finished", True)
 
                     break
@@ -1066,9 +1222,8 @@ def run():
 
                             if strategy == ExportStrategy.ADAPTER:
                                 print("Saving LoRA adapter...")
-                                model.model.save_pretrained(
-                                    save_directory,
-                                    max_shard_size=settings.max_shard_size,
+                                model.save_adapter(
+                                    save_directory, settings.max_shard_size
                                 )
                             else:
                                 print("Saving merged model...")
@@ -1237,12 +1392,23 @@ def run():
 
                             if strategy == ExportStrategy.ADAPTER:
                                 print("Uploading LoRA adapter...")
-                                model.model.push_to_hub(
-                                    repo_id,  # ty: ignore[invalid-argument-type]
-                                    private=private,
-                                    max_shard_size=settings.max_shard_size,
-                                    token=token,
-                                )
+                                # Saved first, so that row scales reach the upload too.
+                                with tempfile.TemporaryDirectory() as directory:
+                                    model.save_adapter(
+                                        directory, settings.max_shard_size
+                                    )
+                                    api = HfApi(token=token)
+                                    api.create_repo(
+                                        repo_id, private=private, exist_ok=True
+                                    )
+                                    # PEFT's model card names a local base model by its
+                                    # path, which the Hub rejects. The base model's card,
+                                    # if it has one, is uploaded below instead.
+                                    api.upload_folder(
+                                        folder_path=directory,
+                                        repo_id=repo_id,
+                                        ignore_patterns=["README.md"],
+                                    )
                             else:
                                 print("Uploading merged model...")
                                 merged_model = model.get_merged_model()
@@ -1310,7 +1476,7 @@ def run():
                             if reproducibility_information != "none":
                                 # Set the number of trials to the number of actual completed trials
                                 # for the reproduction configuration.
-                                settings.n_trials = len(study.trials)
+                                settings.n_trials = count_trials(study)
                                 current_export_strategy = settings.export_strategy
                                 settings.export_strategy = strategy
 

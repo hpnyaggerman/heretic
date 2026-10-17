@@ -3,6 +3,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -19,12 +20,24 @@ class Score:
     - `rich_display`: formatted Rich markup shown to the user in logs/console.
     - `md_display`: formatted value in the HF model card.
     - `components`: named values that `value` is computed from, if any.
+    - `records`: what was graded, one record per request (such as the text, its verdict and
+      the judge's reasoning), written to the run log but not stored with the trial.
     """
 
     value: float
     rich_display: str
     md_display: str
     components: dict[str, float] = field(default_factory=dict)
+    records: list[dict[str, Any]] = field(default_factory=list)
+
+    def summary(self) -> dict[str, Any]:
+        """The score without its records, as stored with a trial and in the study."""
+        return {
+            "value": self.value,
+            "rich_display": self.rich_display,
+            "md_display": self.md_display,
+            "components": self.components,
+        }
 
 
 class Scorer(Plugin, ABC):
