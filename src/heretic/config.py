@@ -332,31 +332,31 @@ class Settings(BaseSettings):
         exclude=True,
     )
 
-    chain_of_thought_skips: list[tuple[str, str]] = Field(
+    chain_of_thought_blocks: list[tuple[str, str]] = Field(
         default=[
             # Most thinking models.
             (
                 "<think>",
-                "<think></think>",
+                "</think>",
             ),
             # gpt-oss.
             (
                 "<|channel|>analysis<|message|>",
-                "<|channel|>analysis<|message|><|end|><|start|>assistant<|channel|>final<|message|>",
+                "<|end|><|start|>assistant<|channel|>final<|message|>",
             ),
             # Unknown, suggested by user.
             (
                 "<thought>",
-                "<thought></thought>",
+                "</thought>",
             ),
             # Unknown, suggested by user.
             (
                 "[THINK]",
-                "[THINK][/THINK]",
+                "[/THINK]",
             ),
         ],
         description=(
-            "List of pairs of the form (cot_initializer, closed_cot_block) used to skip "
+            "List of pairs of the form (cot_initializer, cot_finalizer) used to skip "
             "the Chain-of-Thought block in responses, so that evaluation happens "
             "at the start of the actual response."
         ),
@@ -378,8 +378,8 @@ class Settings(BaseSettings):
         default=None,
         description=(
             'Text that closes the model\'s thinking block (e.g. "</think>"). '
-            "If not set, it is determined from chain_of_thought_skips while the response prefix "
-            "is detected, so it must be set whenever response_prefix is set."
+            "If not set, it is the finalizer of the chain_of_thought_blocks pair found while the "
+            "response prefix is detected, so it must be set whenever response_prefix is set."
         ),
     )
 
@@ -695,6 +695,15 @@ class Settings(BaseSettings):
         description='Which reproducibility information to add to the Hugging Face repository: "full", "basic", "none", or unset to prompt the user.',
     )
 
+    upload_tags: list[str] = Field(
+        default=[
+            "uncensored",
+            "decensored",
+            "abliterated",
+        ],
+        description="Tags to add to the Hugging Face repository when uploading the model.",
+    )
+
     ignore_mismatches: bool | None = Field(
         default=None,
         description="Whether to attempt to reproduce the model even if there are environment mismatches, or unset to prompt the user.",
@@ -716,11 +725,11 @@ class Settings(BaseSettings):
     _reads_command_line: ClassVar[bool] = False
 
     @classmethod
-    def from_command_line(cls) -> "Settings":
-        """The settings from the command line, the environment and config.toml."""
+    def from_command_line(cls, **values: Any) -> "Settings":
+        """The settings from `values`, the command line, the environment and config.toml."""
         cls._reads_command_line = True
         try:
-            return cls()
+            return cls(**values)
         finally:
             cls._reads_command_line = False
 
@@ -746,10 +755,43 @@ class Settings(BaseSettings):
             else ()
         )
         return (
-            init_settings,  # Used during resume - should override *all* other sources.
+            init_settings,  # Values passed to the constructor override all other sources.
             *command_line,
             EnvSettingsSource(settings_cls, env_prefix="HERETIC_"),
             dotenv_settings,
             file_secret_settings,
             TomlConfigSettingsSource(settings_cls, toml_file="config.toml"),
         )
+
+    @classmethod
+    def model_validate_init_only(
+        cls, values: dict[str, Any], current: "Settings"
+    ) -> "Settings":
+        """
+        Validates `values` without reading any other settings source: nothing
+        comes from config.toml, environment variables or the command line, and
+        settings missing from `values` get their defaults. Settings with
+        `exclude=True` (such as `save_directory`) are left out of serialized
+        settings, so they are taken from `current`.
+        """
+        excluded = {
+            name: getattr(current, name)
+            for name, field in cls.model_fields.items()
+            if field.exclude
+        }
+        return InitOnlySettings.model_validate(values | excluded)
+
+
+class InitOnlySettings(Settings):
+    """Settings validated only from the values passed in, without reading any source."""
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)

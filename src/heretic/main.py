@@ -47,6 +47,7 @@ from .progress import patch_tqdm
 patch_tqdm()
 """
 
+import json
 import logging
 import math
 import random
@@ -219,22 +220,6 @@ def get_recorded_baseline_scores(
     return [(record["name"], Score(**record["score"])) for record in records]
 
 
-def restore_settings(stored: str | dict[str, Any], current: Settings) -> Settings:
-    """
-    Settings rebuilt from stored ones, with those excluded from storing, which belong to
-    the run rather than to the study, taken from the current settings.
-    """
-    settings = (
-        Settings.model_validate_json(stored)
-        if isinstance(stored, str)
-        else Settings.model_validate(stored)
-    )
-    for name, field in Settings.model_fields.items():
-        if field.exclude:
-            setattr(settings, name, getattr(current, name))
-    return settings
-
-
 def is_counted(trial: FrozenTrial) -> bool:
     """
     Whether the trial counts as one of the study's trials. An interrupted trial does not,
@@ -364,7 +349,9 @@ def run():
 
         print()
 
-        settings = restore_settings(reproduction_information["settings"], settings)
+        settings = Settings.model_validate_init_only(
+            reproduction_information["settings"], settings
+        )
 
     if settings.seed is None:
         settings.seed = random.randint(0, 2**32 - 1)
@@ -498,7 +485,9 @@ def run():
             return
 
         if action == "continue":
-            settings = restore_settings(existing_study.user_attrs["settings"], settings)
+            settings = Settings.model_validate_init_only(
+                json.loads(existing_study.user_attrs["settings"]), settings
+            )
             recorded_baseline_scores = get_recorded_baseline_scores(
                 optuna.load_study(study_name="heretic", storage=storage)
             )
@@ -586,19 +575,36 @@ def run():
         print(f"* [bold]{len(response_prefix_test_prompts)}[/] prompts loaded")
 
         print()
-        print("Checking for common response prefix...")
+        print(
+            "Checking chat template for a closed Chain-of-Thought block or an initializer..."
+        )
 
-        # Detect if the model's chat template inserts a reasoning tag on its own
-        # at the end of user's prompt (e.g. <think>) by using a dummy prompt.
-        # If found, then we use the full closed CoT as the response prefix.
-        # LiquidAI's LFM models do this (Lfm2ForCausalLM).
+        # Detect if the model's chat template inserts a closed Chain-of-Thought block
+        # (e.g. <think></think>) or an initializer (e.g. <think>) on its own at the end
+        # of the user's prompt by using a dummy prompt.
+        # If a full closed block is found, no response prefix is required. If only an
+        # initializer is found, we use the finalizer as the response prefix (e.g. </think>)
+        # so that when it's concatenated, it completes the closed CoT block.
+        # LiquidAI's LFM2.5 models and Qwen's Qwen3.5 models do this by
+        # inserting the CoT initializer to enable thinking by default.
+        #
+        # If the model supports system messages, we provide a custom one to
+        # override the default system instructions for this case. Because they
+        # may contain CoT examples like '[THINK]...[/THINK]', which would trigger
+        # false-positive matches when searching in the dummy prompt (e.g. Mistral-3).
+        dummy_messages = []
+        if model.supports_system_role:
+            dummy_messages.append(
+                {"role": "system", "content": "You are a helpful assistant."}
+            )
+        dummy_messages.append({"role": "user", "content": "This is a dummy prompt."})
 
         # This cast is valid because str is the return type
         # for a single chat operation with tokenize=False.
         dummy_prompt = cast(
             str,
             model.tokenizer.apply_chat_template(
-                [{"role": "user", "content": "This is a dummy prompt."}],
+                dummy_messages,
                 add_generation_prompt=True,
                 tokenize=False,
                 **model.template_kwargs(),
@@ -607,38 +613,71 @@ def run():
 
         cot_skip_applied = False
 
-        for cot_initializer, closed_cot_block in settings.chain_of_thought_skips:
-            # Match the tag and ignore any whitespace characters following it at the end
-            # (if any), including spaces, tabs, and linebreaks. This is required for models
-            # having whitespaces after the tags.
-            pattern = rf"{re.escape(cot_initializer)}\s*$"
-            match = re.search(pattern, dummy_prompt)
+        for cot_initializer, cot_finalizer in settings.chain_of_thought_blocks:
+            # Check if the chat template already inserts the full closed CoT block
+            # (e.g. When thinking is disabled by the chat template).
+            # Smaller variants like Qwen/Qwen3.5-2B do this by inserting the full
+            # CoT block to disable thinking by default, while larger variants only
+            # insert the initializer to enable thinking by default (>=4B).
+            # We allow arbitrary characters and whitespaces, including newlines via
+            # re.DOTALL between the initializer and the finalizer.
+            # This makes the logic more generic for patterns which pre-fill
+            # some text (e.g. <think>Some instruction</think>).
+            pattern_closed = (
+                rf"{re.escape(cot_initializer)}.*{re.escape(cot_finalizer)}"
+            )
+            if re.search(pattern_closed, dummy_prompt, flags=re.DOTALL):
+                settings.response_prefix = ""
+                print(
+                    f"* Chat template inserts full closed CoT block [bold]{escape(repr(cot_initializer + cot_finalizer))}[/]"
+                )
+                print("* Response prefix is not required")
+                cot_skip_applied = True
+                break
 
-            if match:
+            if cot_initializer in dummy_prompt:
                 if settings.thinking:
                     # An empty prefix keeps the block that the template opened.
                     settings.response_prefix = ""
-                    settings.thinking_closer = (
-                        settings.thinking_closer
-                        or closed_cot_block[len(cot_initializer) :]
+                    settings.thinking_closer = settings.thinking_closer or cot_finalizer
+                    print(
+                        f"* Chat template inserts CoT initializer: [bold]{escape(repr(cot_initializer))}[/]"
                     )
                     print("* Thinking enabled by chat template")
                 else:
-                    # We use only the closed CoT block here. Any whitespaces
-                    # will be handled by the 'Rechecking with prefix' logic below.
-                    settings.response_prefix = closed_cot_block
+                    # The chat template already inserted the initializer, so we just
+                    # supply the finalizer as the response prefix. So that when
+                    # concatenated to the prompts during generation, it forms a full
+                    # closed CoT block (e.g. <think></think>).
+                    # Passing a full closed CoT block for models which only insert the
+                    # initializer is wrong, resulting in: '<think>\n<think></think>\n\n'
+                    # during the generation for Qwen3.5 models (>=4B) as an example.
+                    # Any trailing whitespaces will be handled by the
+                    # 'Rechecking with prefix' logic below.
+                    settings.response_prefix = cot_finalizer
                     print(
-                        f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
+                        f"* Chat template inserts CoT initializer: [bold]{escape(repr(cot_initializer))}[/]"
+                    )
+                    print(
+                        f"* Remaining CoT finalizer: [bold]{escape(repr(cot_finalizer))}[/]"
                     )
                 cot_skip_applied = True
                 break
 
+        if not cot_skip_applied:
+            print("* None found")
+
         # Fallback to inference for models like mistral-3 which are specifically
-        # instructed to generate thinking tags using the system prompt in their
-        # chat template, instead of inserting a prefix tag (e.g. <think>) at
-        # the end of user prompt like the case above. We expect the model to
-        # generate those tags.
+        # instructed to generate the CoT block using the system prompt in their
+        # chat template, instead of inserting an initializer at the end of
+        # the user prompt like the case above. The test prompts do not
+        # override the system prompt, so here we expect the model to generate
+        # the initializer, which we then close using the finalizer.
+        # Some models may inherently generate the CoT block simply due
+        # to their training, regardless of instructions.
         if settings.response_prefix is None:
+            print()
+            print("Checking for common response prefix...")
             responses = model.get_responses_batched(response_prefix_test_prompts)
 
             # Despite being located in os.path, commonprefix actually performs
@@ -656,20 +695,19 @@ def run():
 
                 for (
                     cot_initializer,
-                    closed_cot_block,
-                ) in settings.chain_of_thought_skips:
+                    cot_finalizer,
+                ) in settings.chain_of_thought_blocks:
                     if settings.response_prefix.startswith(cot_initializer):
                         if settings.thinking:
                             settings.response_prefix = cot_initializer
                             settings.thinking_closer = (
-                                settings.thinking_closer
-                                or closed_cot_block[len(cot_initializer) :]
+                                settings.thinking_closer or cot_finalizer
                             )
                             print(
                                 f"* Thinking opener kept: [bold]{escape(repr(settings.response_prefix))}[/]"
                             )
                         else:
-                            settings.response_prefix = closed_cot_block
+                            settings.response_prefix = cot_initializer + cot_finalizer
                             print(
                                 f"* Closed Chain-of-Thought block: [bold]{escape(repr(settings.response_prefix))}[/]"
                             )
@@ -678,11 +716,18 @@ def run():
             else:
                 print("* None found")
 
-        # When using a Chain-of-Thought skip, we need to check that the prefix
-        # is actually complete (e.g. not missing a trailing newline). In thinking mode,
-        # the prefix ends inside the open thinking block, where what follows is the
-        # model's own thinking rather than part of the template, so it is not extended.
-        if cot_skip_applied and not settings.thinking:
+        # Only recheck if we actually supply a prefix to find any missed whitespaces
+        # like '</think>' (supplied finalizer) or '[THINK][/THINK]' (supplied closed CoT
+        # block for models instructed to think, e.g. mistral-3).
+        # When the chat template already inserts a full closed block, response_prefix is ""
+        # and rechecking is not required. Otherwise it would just run inference
+        # and set common words as the response_prefix (e.g. 'Sure,', 'I cannot').
+        # In thinking mode, the prefix ends inside the open thinking block, where what
+        # follows is the model's own thinking rather than part of the template, so it is
+        # not extended.
+        if cot_skip_applied and settings.response_prefix and not settings.thinking:
+            # When using a Chain-of-Thought skip, we need to check that the prefix
+            # is actually complete (e.g. not missing a trailing newline).
             print("* Rechecking with prefix...")
             responses = model.get_responses_batched(response_prefix_test_prompts)
             additional_prefix = commonprefix(responses).rstrip(" ")
@@ -698,7 +743,7 @@ def run():
             print(
                 "[yellow]No thinking opener was detected: rollouts are answers only, capped at "
                 f"max_response_length tokens, with response prefix {escape(repr(settings.response_prefix))}. "
-                "If the model thinks with an unlisted opener, add its pair to chain_of_thought_skips; "
+                "If the model thinks with an unlisted opener, add its pair to chain_of_thought_blocks; "
                 "if response_prefix is set by hand, set thinking_closer too.[/]"
             )
 
@@ -1225,6 +1270,7 @@ def run():
                                 model.save_adapter(
                                     save_directory, settings.max_shard_size
                                 )
+                                print(f"Model saved to [bold]{save_directory}[/].")
                             else:
                                 print("Saving merged model...")
                                 merged_model = model.get_merged_model()
@@ -1237,9 +1283,10 @@ def run():
                                 model.tokenizer.save_pretrained(save_directory)
                                 if model.processor is not None:
                                     model.processor.save_pretrained(save_directory)
+                                print(f"Model saved to [bold]{save_directory}[/].")
+                                # Merging replaced the trial's adapter in place.
+                                # Restore it only after the save has been reported.
                                 reset_trial_model()
-
-                            print(f"Model saved to [bold]{save_directory}[/].")
 
                             if reproduction_mode:
                                 print("Verifying hashes of weight files...")
@@ -1409,6 +1456,7 @@ def run():
                                         repo_id=repo_id,
                                         ignore_patterns=["README.md"],
                                     )
+                                print(f"Model uploaded to [bold]{repo_id}[/].")
                             else:
                                 print("Uploading merged model...")
                                 merged_model = model.get_merged_model()
@@ -1431,6 +1479,9 @@ def run():
                                         private=private,
                                         token=token,
                                     )
+                                print(f"Model uploaded to [bold]{repo_id}[/].")
+                                # Merging replaced the trial's adapter in place.
+                                # Restore it only after the upload has been reported.
                                 reset_trial_model()
 
                             if is_hf_path(settings.model):
@@ -1450,11 +1501,15 @@ def run():
                                     card.data = ModelCardData()
                                 if card.data.tags is None:
                                     card.data.tags = []
-                                card.data.tags.append("heretic")
-                                card.data.tags.append("uncensored")
-                                card.data.tags.append("decensored")
-                                card.data.tags.append("abliterated")
-                                if reproducibility_information != "none":
+                                if "heretic" not in card.data.tags:
+                                    card.data.tags.append("heretic")
+                                for tag in settings.upload_tags:
+                                    if tag not in card.data.tags:
+                                        card.data.tags.append(tag)
+                                if (
+                                    reproducibility_information != "none"
+                                    and "reproducible" not in card.data.tags
+                                ):
                                     card.data.tags.append("reproducible")
 
                                 # Must be a Hugging Face Hub repository ID,
@@ -1494,8 +1549,6 @@ def run():
                                     )
                                 finally:
                                     settings.export_strategy = current_export_strategy
-
-                            print(f"Model uploaded to [bold]{repo_id}[/].")
 
                             if reproduction_mode:
                                 print("Verifying hashes of weight files...")
